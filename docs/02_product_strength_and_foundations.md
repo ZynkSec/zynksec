@@ -495,14 +495,3 @@ The existing phases in `01_scoping_and_roadmap.md` don't need to be rewritten; t
 - **Phase 7:** Commercial launch + K8s + runtime protection.
 
 ---
-
-## Part 7 — What you should decide this week
-
-To lock the foundations, I need answers to four questions:
-
-1. **License:** AGPLv3 (recommended), MIT, or source-available?
-2. **First framework profile:** do you want Phase 1's first profile to be Next.js + Vercel (huge audience), Laravel (easier targets, fewer competitors), or a stack you personally know best?
-3. **Intensity tier default:** ship with Passive + Standard (recommended) and add Deep in Phase 2? Or Standard-only from the start and keep things simple?
-4. **AI/LLM coverage:** do you want this category prioritized into Phase 2 instead of Phase 4? It's the strongest 2026 differentiator, but it adds scope.
-
-Once those are answered, we can draft the detailed technical architecture doc (`03_architecture.md`) — the finding schema, the scanner plugin interface, the database schema, the scan orchestration state machine — and start scaffolding code.
