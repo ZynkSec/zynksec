@@ -1025,17 +1025,3 @@ The scoping doc's phases correspond to specific architecture deliverables:
 | 6 | AI amplification layer (local Mistral/Qwen3), contextual remediation notes, semantic dedupe pass. |
 | 7 | Kubernetes migration, SSO, compliance mappings, runtime protection as a separate product. |
 
----
-
-## 22. Open decisions I need from Hugo before Phase 0
-
-None of these block thinking or writing more docs, but they block writing the first line of scaffolding code:
-
-1. **Monorepo vs multirepo?** Recommendation: **monorepo** (one GitHub repo, folders for `apps/`, `packages/`, `infra/`, `rules/`, `docs/`). Simpler for a solo build.
-2. **Frontend package manager?** Recommendation: **pnpm** (fast, disk-efficient, monorepo-friendly).
-3. **Database migration tool?** Recommendation: **Alembic** (SQLAlchemy-native).
-4. **Error tracking in prod?** Recommendation: **self-hosted GlitchTip** (Sentry-compatible, free).
-5. **Email transport?** Recommendation: **Postmark's free dev tier for now, migrate to self-hosted Postal if spend matters**. Transactional email is the hardest "free tier" category.
-6. **Where should the initial repo live?** Public from day one (AGPLv3) or private until Phase 4?
-
-The recommendations above will be my defaults when I draft the scaffolding plan unless you say otherwise. Once you confirm, we move to `04_phase0_scaffolding.md` — the concrete plan for the first month of work.
