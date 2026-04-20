@@ -309,10 +309,3 @@ Realistic solo cadence is nights + weekends. I'm using **months** instead of wee
 Once those four are done, Phase 1 begins.
 
 ---
-
-## Appendix A — Open questions for Hugo (v0.2)
-
-1. Do you already have developer hardware capable of running Docker + Juice Shop + DVWA + the stack locally? (A recent laptop with 16 GB RAM is the floor.)
-2. Do you plan to make Zynksec **source-available** (closed copyright, anyone can read) or **true open source** (MIT / Apache / AGPL)? This affects community strategy — AGPL lets you open the repo while protecting the SaaS offering.
-3. When you say "we may need to write custom code to improve ZAP," are you comfortable learning some Java for the ZAP add-on API later, or would you prefer staying 100% Python and working around ZAP's limits with external logic?
-4. Any specific SaaS or stack you plan to use Zynksec on *first* (your own projects)? Real targets are the fastest way to find what's missing from the scanner.
