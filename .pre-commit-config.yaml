@@ -1,0 +1,61 @@
+# Zynksec pre-commit — docs/04 §0.12.
+# mypy deliberately does NOT run here; it runs in CI only so pre-commit
+# stays fast (docs/04 §0.19 risk table).
+
+default_language_version:
+  python: python3.12
+
+repos:
+  # ---------- Repo hygiene ----------
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-added-large-files
+        args: ["--maxkb=1024"]
+      - id: check-merge-conflict
+      - id: check-yaml
+        args: ["--allow-multiple-documents"]
+      - id: check-json
+      - id: check-toml
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: mixed-line-ending
+        args: ["--fix=lf"]
+
+  # ---------- Python — ruff (lint + import sort) ----------
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.7.4
+    hooks:
+      - id: ruff
+        args: ["--fix"]
+
+  # ---------- Python — black (formatter; runs in CI too) ----------
+  - repo: https://github.com/psf/black
+    rev: 24.10.0
+    hooks:
+      - id: black
+
+  # ---------- Secrets — gitleaks ----------
+  # CLAUDE.md §6: push protection is also on at the GitHub side; this
+  # catches it before the network round-trip.
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.21.2
+    hooks:
+      - id: gitleaks
+
+  # ---------- Local JS/TS hooks (use the repo's pnpm toolchain) ----------
+  - repo: local
+    hooks:
+      - id: prettier
+        name: prettier
+        entry: pnpm exec prettier --write
+        language: system
+        types_or: [javascript, jsx, ts, tsx, json, yaml, markdown, css, html]
+        pass_filenames: true
+
+      - id: eslint
+        name: eslint
+        entry: pnpm exec eslint --no-error-on-unmatched-pattern
+        language: system
+        files: \.(js|mjs|cjs|jsx|ts|tsx)$
+        pass_filenames: true

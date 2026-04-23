@@ -20,12 +20,12 @@ When reporting, please include:
 
 Zynksec is a solo, pre-alpha project. Response times reflect that:
 
-| Stage | Target |
-| --- | --- |
-| Acknowledgement of report | Within 5 business days |
-| Initial triage and severity rating | Within 14 business days |
-| Fix or mitigation plan communicated | Within 30 business days for High / Critical |
-| Public disclosure | Coordinated with reporter after a fix is available |
+| Stage                               | Target                                             |
+| ----------------------------------- | -------------------------------------------------- |
+| Acknowledgement of report           | Within 5 business days                             |
+| Initial triage and severity rating  | Within 14 business days                            |
+| Fix or mitigation plan communicated | Within 30 business days for High / Critical        |
+| Public disclosure                   | Coordinated with reporter after a fix is available |
 
 If a vulnerability is being actively exploited, we will move faster.
 

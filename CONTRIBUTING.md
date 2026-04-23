@@ -13,7 +13,7 @@ That said, there are high-value ways to help right now.
 1. **Share the SaaS stack you want Zynksec to scan well.**
    Open a [Discussion](https://github.com/ZynkSec/zynksec/discussions) describing the stack (e.g., Next.js + Vercel + Supabase + Clerk, or Django + Render + Auth0) and the vulnerability classes that stack tends to make easy to get wrong. Framework-aware scanning is a core design goal; your real-world experience makes the framework profiles useful.
 2. **Name the vulnerability types Zynksec must not miss.**
-   If you've shipped a SaaS and learned the hard way what a scanner *should* have caught, we want to hear it. This shapes the benchmark suite.
+   If you've shipped a SaaS and learned the hard way what a scanner _should_ have caught, we want to hear it. This shapes the benchmark suite.
 3. **Review the design docs.**
    [`docs/01_scoping_and_roadmap.md`](docs/01_scoping_and_roadmap.md), [`docs/02_product_strength_and_foundations.md`](docs/02_product_strength_and_foundations.md), and [`docs/03_architecture.md`](docs/03_architecture.md) are the thinking so far. If something looks wrong, unclear, or missing, open an Issue with the `design-review` label.
 4. **Star and watch.**

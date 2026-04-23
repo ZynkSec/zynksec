@@ -28,16 +28,16 @@ Zynksec is the tool a solo founder, a small team, or a security-curious develope
 
 ## Current status
 
-| Phase | Scope | State |
-| --- | --- | --- |
-| Phase 0 — Foundation | Monorepo layout, Docker Compose, minimal ZAP baseline scan against a local target | In progress |
-| Phase 1 — DAST MVP | ZAP orchestration, Nuclei integration, unified finding schema, basic UI, ownership verification | Planned |
-| Phase 2 — Recon + APIs | Subfinder/httpx/Katana discovery, OpenAPI/GraphQL testing, OAST via Interactsh | Planned |
-| Phase 3 — SAST / secrets / deps | Semgrep, Gitleaks, Trivy, OSV-Scanner, Syft, Grype | Planned |
-| Phase 4 — AI-assisted remediation | Self-hosted open-weight models (Mistral Small 3.1, Qwen3 class) | Planned |
-| Phase 5 — Hosted scan orchestration | Single-VPS deployment, multi-tenant hosted option | Planned |
-| Phase 6 — Active defense | Coraza/ModSecurity + CRS, Falco for runtime | Planned |
-| Phase 7 — Commercial viability | Pro rule packs, hosted SaaS, enterprise features | Planned |
+| Phase                               | Scope                                                                                           | State       |
+| ----------------------------------- | ----------------------------------------------------------------------------------------------- | ----------- |
+| Phase 0 — Foundation                | Monorepo layout, Docker Compose, minimal ZAP baseline scan against a local target               | In progress |
+| Phase 1 — DAST MVP                  | ZAP orchestration, Nuclei integration, unified finding schema, basic UI, ownership verification | Planned     |
+| Phase 2 — Recon + APIs              | Subfinder/httpx/Katana discovery, OpenAPI/GraphQL testing, OAST via Interactsh                  | Planned     |
+| Phase 3 — SAST / secrets / deps     | Semgrep, Gitleaks, Trivy, OSV-Scanner, Syft, Grype                                              | Planned     |
+| Phase 4 — AI-assisted remediation   | Self-hosted open-weight models (Mistral Small 3.1, Qwen3 class)                                 | Planned     |
+| Phase 5 — Hosted scan orchestration | Single-VPS deployment, multi-tenant hosted option                                               | Planned     |
+| Phase 6 — Active defense            | Coraza/ModSecurity + CRS, Falco for runtime                                                     | Planned     |
+| Phase 7 — Commercial viability      | Pro rule packs, hosted SaaS, enterprise features                                                | Planned     |
 
 Detailed scoping and roadmap lives in [`docs/01_scoping_and_roadmap.md`](docs/01_scoping_and_roadmap.md).
 
@@ -62,11 +62,11 @@ Zynksec is not ready for use or contribution yet. If you're curious:
 
 ## Documentation
 
-| Doc | What it covers |
-| --- | --- |
-| [`docs/01_scoping_and_roadmap.md`](docs/01_scoping_and_roadmap.md) | Product scope, phases, deployment topology, risk mitigation |
+| Doc                                                                                          | What it covers                                                     |
+| -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| [`docs/01_scoping_and_roadmap.md`](docs/01_scoping_and_roadmap.md)                           | Product scope, phases, deployment topology, risk mitigation        |
 | [`docs/02_product_strength_and_foundations.md`](docs/02_product_strength_and_foundations.md) | Modern SaaS reality, expanded vulnerability taxonomy, design moves |
-| [`docs/03_architecture.md`](docs/03_architecture.md) | System architecture, schemas, plugin contract, state machine |
+| [`docs/03_architecture.md`](docs/03_architecture.md)                                         | System architecture, schemas, plugin contract, state machine       |
 
 ## Security
 
