@@ -1,0 +1,12 @@
+node_modules/
+pnpm-lock.yaml
+uv.lock
+**/.next/
+**/dist/
+**/build/
+**/.venv/
+**/__pycache__/
+**/.turbo/
+*.min.*
+docs/
+CHANGELOG.md
