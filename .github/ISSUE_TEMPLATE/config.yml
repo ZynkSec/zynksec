@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security report (private disclosure)
+    url: https://github.com/ZynkSec/zynksec/security/advisories/new
+    about: Report vulnerabilities privately — do NOT file a public issue.
+  - name: Documentation
+    url: https://github.com/ZynkSec/zynksec/tree/main/docs
+    about: Architecture, scoping, and phase docs.  Check these first.

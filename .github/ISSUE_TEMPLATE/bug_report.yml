@@ -1,0 +1,72 @@
+name: Bug report
+description: Report a defect in Zynksec.
+title: "[bug] "
+labels: ["type: bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping make Zynksec reliable.
+
+        **If this is a security vulnerability, do NOT file it here —
+        use the private advisory channel from `SECURITY.md`.**
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened? One or two sentences.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction steps
+      description: Shortest path to reproduce.
+      placeholder: |
+        1. docker compose up -d postgres redis api
+        2. curl -sf http://localhost:8000/api/v1/health
+        3. Observed: ...
+        4. Expected: ...
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Zynksec version / commit
+      description: Output of `git rev-parse --short HEAD`.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - api (FastAPI)
+        - worker (Celery)
+        - web (Next.js)
+        - shared-schema
+        - scanners (ZAP / Nuclei / ...)
+        - infra (Docker Compose, CI)
+        - docs
+        - other
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Paste structlog JSON / stderr.  Scrub secrets first.
+      render: shell
+
+  - type: input
+    id: env
+    attributes:
+      label: Host OS / Docker version
+      placeholder: "macOS 15.4, Docker 29.2.0"
+    validations:
+      required: true

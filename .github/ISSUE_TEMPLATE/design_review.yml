@@ -1,0 +1,54 @@
+name: Design review
+description: Propose or review a non-trivial change before writing code.
+title: "[design] "
+labels: ["type: design"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template for any change whose impact spans more than
+        one module, changes an external contract, or is worth an ADR.
+        Keep it short — the point is to force the decision, not to
+        write a white paper.
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: |
+        What problem are we solving?  Link relevant code, docs, prior
+        art, incidents.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: What are you proposing to build / change?
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: At least two, with the reason each was rejected.
+    validations:
+      required: true
+
+  - type: textarea
+    id: risks
+    attributes:
+      label: Risks & rollout
+      description: Security, backward-compat, migration path, rollback.
+    validations:
+      required: true
+
+  - type: textarea
+    id: exit_criteria
+    attributes:
+      label: Exit criteria
+      description: How do we know when this is done and right?
+    validations:
+      required: true
