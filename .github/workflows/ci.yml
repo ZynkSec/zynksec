@@ -84,18 +84,25 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Install trivy CLI
-        env:
-          TRIVY_VERSION: "0.58.1"
         run: |
           set -euo pipefail
-          # Use the upstream installer pinned to the same tag as the binary
-          # (v${TRIVY_VERSION}). The installer knows the correct asset name
-          # for the runner's OS/arch. -f makes curl fail on HTTP 4xx/5xx
-          # so a missing asset surfaces as a curl error, not a cryptic
-          # `gzip: not in gzip format` downstream.
-          curl -fsSL \
-            "https://raw.githubusercontent.com/aquasecurity/trivy/v${TRIVY_VERSION}/contrib/install.sh" \
-            | sudo sh -s -- -b /usr/local/bin "v${TRIVY_VERSION}"
+          # Install trivy from the official Aqua Security APT repository.
+          # This is the trivy-team-recommended install path for Debian/Ubuntu
+          # (https://trivy.dev/docs/getting-started/installation/) and avoids
+          # the GitHub-release-asset 404s we hit with both direct curl
+          # downloads and the contrib/install.sh installer.
+          #
+          # Trade-off: this installs whatever trivy version is current in the
+          # Aqua APT repo, not a pinned patch version. For a security scanner
+          # this is the right call — vuln signatures and matchers are updated
+          # frequently and pinning the binary defeats half the point.
+          sudo install -d /etc/apt/keyrings -m 0755
+          curl -fsSL https://aquasecurity.github.io/trivy-repo/deb/public.key \
+            | sudo gpg --dearmor -o /etc/apt/keyrings/trivy.gpg
+          echo "deb [signed-by=/etc/apt/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" \
+            | sudo tee /etc/apt/sources.list.d/trivy.list > /dev/null
+          sudo apt-get update -qq
+          sudo apt-get install -y trivy
           trivy --version
       - name: Trivy filesystem scan
         run: |
