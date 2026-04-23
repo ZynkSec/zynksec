@@ -45,10 +45,7 @@ venv/
 env/
 ENV/
 
-# Version pinning
-.python-version
-
-# Poetry
+# Poetry (unused — Zynksec uses uv; keep ignored in case a contributor runs Poetry by habit)
 poetry.lock
 
 # pip
