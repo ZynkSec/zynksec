@@ -88,10 +88,14 @@ jobs:
           TRIVY_VERSION: "0.58.1"
         run: |
           set -euo pipefail
-          curl -sSLo /tmp/trivy.tar.gz \
-            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
-          tar -xzf /tmp/trivy.tar.gz -C /tmp trivy
-          sudo mv /tmp/trivy /usr/local/bin/trivy
+          # Use the upstream installer pinned to the same tag as the binary
+          # (v${TRIVY_VERSION}). The installer knows the correct asset name
+          # for the runner's OS/arch. -f makes curl fail on HTTP 4xx/5xx
+          # so a missing asset surfaces as a curl error, not a cryptic
+          # `gzip: not in gzip format` downstream.
+          curl -fsSL \
+            "https://raw.githubusercontent.com/aquasecurity/trivy/v${TRIVY_VERSION}/contrib/install.sh" \
+            | sudo sh -s -- -b /usr/local/bin "v${TRIVY_VERSION}"
           trivy --version
       - name: Trivy filesystem scan
         run: |
