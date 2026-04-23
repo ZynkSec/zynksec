@@ -16,6 +16,10 @@ package = false
 
 [tool.uv.workspace]
 members = ["apps/*", "packages/*"]
+# apps/web is a JavaScript / Next.js package; it lives in the pnpm
+# workspace, not the Python one.  Exclude it from the uv glob so
+# `uv sync` doesn't look for a pyproject.toml there.
+exclude = ["apps/web"]
 
 [dependency-groups]
 dev = [
