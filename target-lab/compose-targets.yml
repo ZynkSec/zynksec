@@ -26,21 +26,20 @@ services:
     networks:
       - zynksec-targets
     healthcheck:
+      # juice-shop's base image ships neither wget nor curl — use the
+      # bundled node runtime (always present, since the app IS Node).
       test:
         - CMD
-        - wget
-        - --spider
-        - --quiet
-        - --tries=1
-        - http://localhost:3000
+        - /nodejs/bin/node
+        - -e
+        - "require('http').get('http://localhost:3000',r=>process.exit(r.statusCode<400?0:1)).on('error',()=>process.exit(1))"
       interval: 5s
       timeout: 3s
       retries: 20
       start_period: 30s
 
-networks:
-  # Declared as external so this file makes sense standalone; when
-  # merged via `-f docker-compose.yml -f target-lab/...` Compose
-  # uses the definition from docker-compose.yml.
-  zynksec-targets:
-    external: true
+# This file is intended as an overlay — `zynksec-targets` is declared
+# in docker-compose.yml with `internal: true`; when Compose merges
+# our `-f` chain, services here reference that declaration.  Adding a
+# redundant declaration here would override `internal: true` and let
+# juice-shop egress to the host — a security regression.
