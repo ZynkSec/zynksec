@@ -25,6 +25,7 @@ COPY pyproject.toml uv.lock ./
 COPY apps/worker ./apps/worker
 COPY packages/db ./packages/db
 COPY packages/shared-schema ./packages/shared-schema
+COPY packages/scanners ./packages/scanners
 
 RUN uv sync --package zynksec-worker --frozen --no-dev
 

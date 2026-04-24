@@ -1,5 +1,11 @@
-"""Scanner runner wrappers.
+"""Scanner runner factories.
 
-Empty in Phase 0 Week 2.  Week 3 lands ``zap_runner.py`` which wraps
-the ZAP plugin from ``packages/scanners``.
+CLAUDE.md §3 (D — Dependency Inversion): the Celery task depends on
+:class:`ScannerPlugin`, not on a concrete engine.  The factories in
+this sub-package are the only modules that name :class:`ZapPlugin`
+(or, in later phases, :class:`NucleiPlugin`, etc.).
 """
+
+from zynksec_worker.runners.zap_runner import build_zap_plugin
+
+__all__ = ["build_zap_plugin"]

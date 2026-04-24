@@ -919,6 +919,7 @@ dependencies = [
     { name = "redis" },
     { name = "structlog" },
     { name = "zynksec-db" },
+    { name = "zynksec-scanners" },
     { name = "zynksec-schema" },
 ]
 
@@ -930,6 +931,7 @@ requires-dist = [
     { name = "redis", specifier = ">=5.2,<6" },
     { name = "structlog", specifier = ">=24,<25" },
     { name = "zynksec-db", editable = "packages/db" },
+    { name = "zynksec-scanners", editable = "packages/scanners" },
     { name = "zynksec-schema", editable = "packages/shared-schema" },
 ]
 
