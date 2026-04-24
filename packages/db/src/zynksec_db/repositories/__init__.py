@@ -1,0 +1,10 @@
+"""Repositories — CLAUDE.md §3 indirection between domain code and
+SQLAlchemy sessions.  Routers and Celery tasks depend on these classes,
+never on raw sessions.
+"""
+
+from zynksec_db.repositories.base import Repository
+from zynksec_db.repositories.finding import FindingRepository
+from zynksec_db.repositories.scan import ScanRepository
+
+__all__ = ["FindingRepository", "Repository", "ScanRepository"]
