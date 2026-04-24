@@ -66,6 +66,20 @@ services:
         condition: service_healthy
     networks:
       - zynksec-core
+    # /ready is the honest orchestrator signal: 200 only when Postgres
+    # + Redis are both reachable; 503 otherwise.  /health (liveness) is
+    # reserved for "is this process alive?" checks.  Python urllib
+    # because curl is not in the slim Python base image.
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import sys,urllib.request;r=urllib.request.urlopen('http://localhost:8000/api/v1/ready',timeout=3);sys.exit(0 if r.status==200 else 1)"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
 
   worker:
     build:
