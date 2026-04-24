@@ -20,12 +20,13 @@ ENV UV_COMPILE_BYTECODE=1 \
 
 WORKDIR /app
 
-# Workspace root + lockfile, then the three workspace members that the
+# Workspace root + lockfile, then the workspace members that the
 # API depends on (transitively).  Copying this way keeps the context
 # narrow without losing the workspace graph.
 COPY pyproject.toml uv.lock ./
 COPY apps/api ./apps/api
 COPY packages/shared-schema ./packages/shared-schema
+COPY packages/db ./packages/db
 COPY packages/scanners ./packages/scanners
 
 RUN uv sync --package zynksec-api --frozen --no-dev

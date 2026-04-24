@@ -85,10 +85,15 @@ def _compose_up() -> Iterator[None]:
     """
 
     if not _KEEP_STACK:
+        # --build ensures the fixture picks up fresh source/Dockerfile
+        # changes without the developer having to remember a manual
+        # `docker compose build`.  Slower (~60 s first time, then
+        # buildx cache), but correctness > speed for Phase 0.
         _run(
             _compose(
                 "up",
                 "-d",
+                "--build",
                 "postgres",
                 "redis",
                 "worker",

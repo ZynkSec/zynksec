@@ -942,6 +942,7 @@ dev = [
     { name = "pytest" },
     { name = "ruff" },
     { name = "sqlalchemy" },
+    { name = "zynksec-db" },
 ]
 
 [package.metadata]
@@ -954,4 +955,5 @@ dev = [
     { name = "pytest", specifier = ">=8.3,<9" },
     { name = "ruff", specifier = ">=0.7,<0.8" },
     { name = "sqlalchemy", specifier = ">=2.0,<3" },
+    { name = "zynksec-db", editable = "packages/db" },
 ]
