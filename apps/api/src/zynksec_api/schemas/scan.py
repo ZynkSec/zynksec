@@ -1,0 +1,44 @@
+"""Scan request and response models.
+
+Both frozen (CLAUDE.md §3 — immutable Pydantic by default).
+``from_attributes=True`` on :class:`ScanRead` so SQLAlchemy ORM objects
+serialise directly.
+"""
+
+from __future__ import annotations
+
+import uuid
+from datetime import datetime
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, HttpUrl
+
+ScanStatus = Literal["queued", "running", "completed", "failed"]
+
+
+class ScanCreate(BaseModel):
+    """Body of ``POST /api/v1/scans``.
+
+    ``project_id`` is optional in Phase 0; if absent, the handler
+    looks up / creates the implicit "Local Dev" project (docs/04 §0.16).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    target_url: HttpUrl
+    project_id: uuid.UUID | None = None
+
+
+class ScanRead(BaseModel):
+    """Response body for ``POST /api/v1/scans`` and ``GET
+    /api/v1/scans/{scan_id}``."""
+
+    model_config = ConfigDict(frozen=True, from_attributes=True)
+
+    id: uuid.UUID
+    project_id: uuid.UUID
+    target_url: str
+    status: ScanStatus
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    created_at: datetime

@@ -1,0 +1,16 @@
+# Integration-test compose overlay.
+#
+# The canonical docker-compose.yml does NOT publish Postgres to the
+# host (CLAUDE.md §17).  Integration tests need host-side SQLAlchemy
+# access, so this overlay temporarily publishes Postgres on host port
+# 55432 (not 5432, to dodge a locally-installed psql).  Use it via:
+#
+#   docker compose \
+#     -f docker-compose.yml \
+#     -f tests/integration/docker-compose.test.yml \
+#     --profile dev up -d postgres redis worker api mailpit
+
+services:
+  postgres:
+    ports:
+      - "55432:5432"

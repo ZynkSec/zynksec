@@ -1,27 +1,27 @@
 """Zynksec API entry point.
 
-Phase 0 Week 1 — a single ``GET /api/v1/health`` route plus the
-structured-logging + request-id middleware that every later route
-relies on.
+Week 2 — includes the health + scans routers, wires the DB session
+dependency, registers the canonical error-shape handler, and keeps
+the Week-1 request-id middleware.
 """
 
 from __future__ import annotations
 
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import asynccontextmanager
 
 import structlog
-from fastapi import APIRouter, FastAPI, Request, Response
+from fastapi import FastAPI, Request, Response
+from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from zynksec_api import __version__
 from zynksec_api.config import get_settings
+from zynksec_api.exceptions import ZynksecError
 from zynksec_api.logging_config import configure_logging
+from zynksec_api.routers import health, scans
 
 _REQUEST_ID_HEADER = "X-Request-ID"
-_SERVICE_NAME = "zynksec-api"
-_HEALTH_BODY = b'{"status":"ok","service":"zynksec-api"}'
 
 
 class RequestIdMiddleware(BaseHTTPMiddleware):
@@ -45,8 +45,7 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
         return response
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     configure_logging(settings.zynksec_log_level)
     structlog.get_logger().info(
@@ -58,23 +57,26 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     structlog.get_logger().info("api.shutdown")
 
 
+def _zynksec_error_handler(request: Request, exc: ZynksecError) -> JSONResponse:
+    """Flatten Starlette's ``{"detail": ...}`` wrapper into the
+    canonical ``{code, message, request_id, [details]}`` shape
+    (CLAUDE.md §4).
+    """
+    del request  # unused; interface demanded by FastAPI
+    return JSONResponse(exc.detail, status_code=exc.status_code)
+
+
 def create_app() -> FastAPI:
     app = FastAPI(
         title="Zynksec API",
         version=__version__,
-        lifespan=lifespan,
+        lifespan=_lifespan,
     )
     app.add_middleware(RequestIdMiddleware)
+    app.add_exception_handler(ZynksecError, _zynksec_error_handler)  # type: ignore[arg-type]
 
-    api_v1 = APIRouter(prefix="/api/v1")
-
-    @api_v1.get("/health")
-    async def health() -> Response:
-        # Exact-byte body matches the Phase-0 DoD literal (session brief
-        # §7.3 — curl -sf /api/v1/health).
-        return Response(content=_HEALTH_BODY, media_type="application/json")
-
-    app.include_router(api_v1)
+    app.include_router(health.router)
+    app.include_router(scans.router)
     return app
 
 
@@ -83,7 +85,6 @@ app = create_app()
 
 def run() -> None:
     """CLI entry point for ``uv run zynksec-api``."""
-
     import uvicorn
 
     settings = get_settings()
