@@ -87,35 +87,31 @@ _configure_logging()
 
 
 @task_prerun.connect  # type: ignore[misc]
-def _bind_correlation_id(
+def _bind_task_context(
     task_id: str | None = None,
     task: Any = None,
-    *args: Any,
-    **kwargs: Any,
+    args: Any = None,
+    kwargs: Any = None,
+    **extra: Any,
 ) -> None:
-    """Bind the API-supplied correlation_id to structlog contextvars.
+    """Bind task metadata (and API-supplied correlation_id) to structlog.
 
-    Celery's ``task.request.headers`` is where ``apps/api``'s
-    ``enqueue_scan`` stashes the correlation_id.  If the task arrived
-    without one (e.g. replay from a dead-letter queue), we generate
-    nothing — downstream logs will simply omit the field rather than
-    correlate to a misleading id.
+    The API hands ``correlation_id`` through as a task kwarg (see
+    ``apps/api/.../celery_client.py``) so it survives the Redis-
+    broker hop.  Reading it from ``kwargs`` here means every task's
+    structlog output carries the originating request's correlation
+    id with no per-task body change.
     """
-    del args, kwargs
-    correlation_id: str | None = None
-    if task is not None:
-        headers = getattr(task.request, "headers", None) or {}
-        if isinstance(headers, dict):
-            raw = headers.get("correlation_id")
-            if raw is not None:
-                correlation_id = str(raw)
+    del extra
     structlog.contextvars.clear_contextvars()
     bindings: dict[str, Any] = {
         "celery_task_id": task_id,
         "celery_task_name": getattr(task, "name", None) if task is not None else None,
     }
-    if correlation_id is not None:
-        bindings["correlation_id"] = correlation_id
+    if isinstance(kwargs, dict):
+        correlation_id = kwargs.get("correlation_id")
+        if correlation_id is not None:
+            bindings["correlation_id"] = str(correlation_id)
     structlog.contextvars.bind_contextvars(**bindings)
 
 

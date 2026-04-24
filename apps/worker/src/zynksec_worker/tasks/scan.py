@@ -119,9 +119,15 @@ def _mark(
 
 
 @celery_app.task(name="scan.run", bind=True)
-def run(self: Task, scan_id: str) -> None:
-    """Drive ZAP through the Phase-0 baseline flow against one target."""
-    del self
+def run(self: Task, scan_id: str, correlation_id: str | None = None) -> None:
+    """Drive ZAP through the Phase-0 baseline flow against one target.
+
+    ``correlation_id`` is a Week-4 observability kwarg consumed by
+    :func:`zynksec_worker.celery_app._bind_task_context` via the
+    ``task_prerun`` signal; this function treats it as a no-op body
+    parameter so Celery's argument-binding accepts it.
+    """
+    del self, correlation_id
     scan_uuid = uuid.UUID(scan_id)
     settings = get_settings()
     factory = _session_factory()

@@ -49,18 +49,21 @@ def _current_correlation_id() -> str | None:
 def enqueue_scan(scan_id: str) -> None:
     """Send the ``scan.run`` task with a string UUID argument.
 
-    Attaches the current request's ``correlation_id`` to the task's
-    Celery headers (docs/04 Week-4 observability) so the worker's
-    ``task_prerun`` signal handler can bind it to structlog's
-    contextvars before user code runs.
+    Passes the current request's ``correlation_id`` as a task kwarg
+    (docs/04 Week-4 observability).  The primitives-only contract
+    (CLAUDE.md §5) holds — ``correlation_id`` is a UUID string, not
+    a rich object.  Celery's ``headers=`` channel looked like the
+    cleaner home for it architecturally, but custom headers don't
+    round-trip reliably through the Redis broker under task protocol
+    v2; kwargs do, and keep the wiring straightforward.
     """
-    headers: dict[str, str] = {}
+    kwargs: dict[str, str] = {}
     correlation_id = _current_correlation_id()
     if correlation_id is not None:
-        headers["correlation_id"] = correlation_id
+        kwargs["correlation_id"] = correlation_id
     get_celery_client().send_task(
         "scan.run",
         args=[scan_id],
+        kwargs=kwargs,
         queue="scans",
-        headers=headers,
     )

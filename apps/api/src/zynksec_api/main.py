@@ -36,6 +36,11 @@ class CorrelationIdMiddleware(BaseHTTPMiddleware):
     ``correlation_id=<uuid>`` via structlog's contextvars merge
     processor.  The same value is echoed in the response header so the
     caller can correlate client-side.
+
+    Emits a single ``http.request`` structlog line after the handler
+    returns so each request produces at least one structured log row
+    carrying the correlation_id — even when the handler body itself
+    logs nothing (uvicorn's access logs bypass structlog).
     """
 
     async def dispatch(
@@ -53,6 +58,10 @@ class CorrelationIdMiddleware(BaseHTTPMiddleware):
         )
         response = await call_next(request)
         response.headers[_CORRELATION_ID_HEADER] = correlation_id
+        structlog.get_logger().info(
+            "http.request",
+            status_code=response.status_code,
+        )
         return response
 
 
