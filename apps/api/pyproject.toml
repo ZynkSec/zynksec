@@ -17,6 +17,11 @@ dependencies = [
   "alembic>=1.13,<2",
   "celery>=5.4,<6",
   "redis>=5.2,<6",
+  # Week-4 observability: error capture into GlitchTip.  The fastapi
+  # extra transitively pulls the starlette integration which attaches
+  # middleware and captures unhandled exceptions from request handlers.
+  # No-ops when SENTRY_DSN is unset (zynksec_api.observability).
+  "sentry-sdk[fastapi]>=2.0,<3",
   "zynksec-schema",
   "zynksec-db",
 ]
