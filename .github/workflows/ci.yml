@@ -129,3 +129,57 @@ jobs:
           tags: zynksec/api:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  integration-tests:
+    name: integration-tests (api + worker + postgres)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install uv + Python
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "0.11.7"
+          python-version: "3.12.7"
+          enable-cache: true
+      - name: Resolve workspace
+        run: uv sync
+      - name: Prepare .env
+        # docker compose's env_file needs the file on disk.
+        run: cp .env.example .env
+      - name: Start Compose stack
+        run: |
+          set -euo pipefail
+          docker compose \
+            -f docker-compose.yml \
+            -f tests/integration/docker-compose.test.yml \
+            --profile dev \
+            up -d postgres redis worker api mailpit
+      - name: Apply Alembic migrations
+        run: |
+          set -euo pipefail
+          docker compose \
+            -f docker-compose.yml \
+            -f tests/integration/docker-compose.test.yml \
+            exec -T api \
+            alembic -c apps/api/alembic.ini upgrade head
+      - name: Run integration tests
+        env:
+          # The workflow manages compose lifecycle; the pytest fixture
+          # skips its own up/down when this is set.
+          ZYNKSEC_TEST_KEEP_STACK: "1"
+        run: uv run pytest tests/integration/ -v
+      - name: Dump Compose logs on failure
+        if: failure()
+        run: |
+          docker compose \
+            -f docker-compose.yml \
+            -f tests/integration/docker-compose.test.yml \
+            logs --no-color
+      - name: Tear down Compose stack
+        if: always()
+        run: |
+          docker compose \
+            -f docker-compose.yml \
+            -f tests/integration/docker-compose.test.yml \
+            down -v
