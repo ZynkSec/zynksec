@@ -8,6 +8,7 @@ members = [
     "zynksec-db",
     "zynksec-scanners",
     "zynksec-schema",
+    "zynksec-worker",
     "zynksec-workspace",
 ]
 
@@ -822,6 +823,31 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [{ name = "pydantic", specifier = ">=2.9,<3" }]
+
+[[package]]
+name = "zynksec-worker"
+version = "0.0.0"
+source = { editable = "apps/worker" }
+dependencies = [
+    { name = "celery" },
+    { name = "psycopg", extra = ["binary"] },
+    { name = "pydantic-settings" },
+    { name = "redis" },
+    { name = "structlog" },
+    { name = "zynksec-db" },
+    { name = "zynksec-schema" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "celery", specifier = ">=5.4,<6" },
+    { name = "psycopg", extras = ["binary"], specifier = ">=3.2,<4" },
+    { name = "pydantic-settings", specifier = ">=2.6,<3" },
+    { name = "redis", specifier = ">=5.2,<6" },
+    { name = "structlog", specifier = ">=24,<25" },
+    { name = "zynksec-db", editable = "packages/db" },
+    { name = "zynksec-schema", editable = "packages/shared-schema" },
+]
 
 [[package]]
 name = "zynksec-workspace"

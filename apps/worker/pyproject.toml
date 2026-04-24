@@ -1,0 +1,28 @@
+[project]
+name = "zynksec-worker"
+version = "0.0.0"
+description = "Zynksec Celery worker — runs scan tasks."
+readme = "README.md"
+requires-python = "==3.12.*"
+license = { text = "AGPL-3.0-or-later" }
+authors = [{ name = "Zynksec Maintainers" }]
+dependencies = [
+  "celery>=5.4,<6",
+  "redis>=5.2,<6",
+  "psycopg[binary]>=3.2,<4",
+  "pydantic-settings>=2.6,<3",
+  "structlog>=24,<25",
+  "zynksec-db",
+  "zynksec-schema",
+]
+
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/zynksec_worker"]
+
+[tool.uv.sources]
+zynksec-db = { workspace = true }
+zynksec-schema = { workspace = true }
