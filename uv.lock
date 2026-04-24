@@ -887,11 +887,15 @@ name = "zynksec-scanners"
 version = "0.0.0"
 source = { editable = "packages/scanners" }
 dependencies = [
+    { name = "httpx" },
     { name = "zynksec-schema" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "zynksec-schema", editable = "packages/shared-schema" }]
+requires-dist = [
+    { name = "httpx", specifier = ">=0.27,<0.29" },
+    { name = "zynksec-schema", editable = "packages/shared-schema" },
+]
 
 [[package]]
 name = "zynksec-schema"
