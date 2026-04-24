@@ -1,12 +1,22 @@
 """Shared pytest fixtures for the integration test suite.
 
-CLAUDE.md §7: integration tests must hit real services — no mocks on
-Postgres, Redis, or Celery.  These fixtures bring up the real compose
-stack once per pytest session, apply Alembic migrations, and expose an
-HTTP client + a SQLAlchemy session to tests.
+CLAUDE.md §7: integration tests hit real Postgres, real Redis, real
+Celery, and — from Week 3 on — a real ZAP container scanning real
+Juice Shop.  No mocks.
 
-Expected runtime: ~30 seconds cold, ~5 seconds warm (compose services
-persist between local test runs via --keep-stack).
+The session-scoped fixture brings up the full stack via:
+
+    docker compose \
+      -f docker-compose.yml \
+      -f target-lab/compose-targets.yml \
+      -f tests/integration/docker-compose.test.yml \
+      --profile dev --profile lab \
+      up -d --build
+
+then waits for the API (``/api/v1/health``) and ZAP (container health)
+before yielding.  Set ``ZYNKSEC_TEST_KEEP_STACK=1`` to skip the
+compose up/down — useful locally and required in CI (the workflow
+manages the stack itself).
 """
 
 from __future__ import annotations
@@ -24,15 +34,19 @@ from sqlalchemy.orm import Session, sessionmaker
 
 REPO_ROOT: Path = Path(__file__).resolve().parents[2]
 TEST_OVERLAY: Path = REPO_ROOT / "tests" / "integration" / "docker-compose.test.yml"
+TARGET_LAB: Path = REPO_ROOT / "target-lab" / "compose-targets.yml"
 
 API_BASE_URL = "http://localhost:8000"
-# The test overlay publishes Postgres on host port 55432; see
-# ``docker-compose.test.yml`` for the rationale.
+# The test overlay publishes Postgres on host port 55432.
 TEST_DATABASE_URL = "postgresql+psycopg://zynksec:changeme-local-only@localhost:55432/zynksec"
 
-# Set to "1" in CI (or locally) to skip compose up/down — useful when
-# developers bring the stack up themselves and iterate on tests.
 _KEEP_STACK = os.environ.get("ZYNKSEC_TEST_KEEP_STACK") == "1"
+
+# Cold-boot budgets tuned for a fresh runner:
+#  - api:       ~60 s (uvicorn starts fast after DB/broker are healthy)
+#  - zap:       ~120 s (ZAP's JVM + DB + plugin loading is slow)
+_API_READY_TIMEOUT_S = 90
+_ZAP_READY_TIMEOUT_S = 180
 
 
 def _compose(*args: str) -> list[str]:
@@ -42,9 +56,13 @@ def _compose(*args: str) -> list[str]:
         "-f",
         str(REPO_ROOT / "docker-compose.yml"),
         "-f",
+        str(TARGET_LAB),
+        "-f",
         str(TEST_OVERLAY),
         "--profile",
         "dev",
+        "--profile",
+        "lab",
         *args,
     ]
 
@@ -60,7 +78,7 @@ def _run(cmd: list[str], *, check: bool = True) -> subprocess.CompletedProcess[s
     )
 
 
-def _wait_for_api(timeout_s: int = 60) -> None:
+def _wait_for_api(timeout_s: int) -> None:
     deadline = time.monotonic() + timeout_s
     last_err = "unknown"
     while time.monotonic() < deadline:
@@ -76,19 +94,36 @@ def _wait_for_api(timeout_s: int = 60) -> None:
     raise RuntimeError(f"API never became healthy within {timeout_s}s: {last_err}")
 
 
+def _wait_for_container_healthy(container: str, timeout_s: int) -> None:
+    """Poll ``docker inspect`` until the container reports 'healthy'."""
+    deadline = time.monotonic() + timeout_s
+    last_status = "unknown"
+    while time.monotonic() < deadline:
+        result = _run(
+            [
+                "docker",
+                "inspect",
+                "--format={{.State.Health.Status}}",
+                container,
+            ],
+            check=False,
+        )
+        last_status = result.stdout.strip() or last_status
+        if last_status == "healthy":
+            return
+        time.sleep(2)
+    raise RuntimeError(
+        f"container {container} not healthy within {timeout_s}s (last={last_status})"
+    )
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _compose_up() -> Iterator[None]:
-    """Bring up the full Week-2 stack for the whole test session.
-
-    Leading underscore satisfies pytest-style PT004 — this fixture is
-    autouse and yields nothing useful, it just manages the stack.
+    """Bring up the full Week-3 stack (api + worker + zap + juice-shop)
+    for the whole test session.  Leading underscore satisfies PT004.
     """
 
     if not _KEEP_STACK:
-        # --build ensures the fixture picks up fresh source/Dockerfile
-        # changes without the developer having to remember a manual
-        # `docker compose build`.  Slower (~60 s first time, then
-        # buildx cache), but correctness > speed for Phase 0.
         _run(
             _compose(
                 "up",
@@ -99,14 +134,16 @@ def _compose_up() -> Iterator[None]:
                 "worker",
                 "api",
                 "mailpit",
+                "zap",
+                "juice-shop",
             )
         )
 
     try:
-        _wait_for_api(timeout_s=90)
-        # Apply migrations against the now-healthy Postgres.  Idempotent —
-        # running twice (CI runs it once already, then we run it again) is
-        # fine because Alembic records applied revisions.
+        _wait_for_api(timeout_s=_API_READY_TIMEOUT_S)
+        _wait_for_container_healthy("zynksec-zap", timeout_s=_ZAP_READY_TIMEOUT_S)
+        _wait_for_container_healthy("zynksec-juice-shop", timeout_s=_ZAP_READY_TIMEOUT_S)
+        # Apply migrations (idempotent — CI also runs this).
         _run(
             _compose(
                 "exec",
@@ -134,11 +171,7 @@ def api_client() -> Iterator[httpx.Client]:
 
 @pytest.fixture
 def db_session() -> Iterator[Session]:
-    """Per-test SQLAlchemy session against the real Postgres.
-
-    The engine is disposed at fixture teardown so we don't leak
-    connections between tests.
-    """
+    """Per-test SQLAlchemy session against the real Postgres."""
     engine = create_engine(TEST_DATABASE_URL, pool_pre_ping=True)
     factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
     session = factory()
