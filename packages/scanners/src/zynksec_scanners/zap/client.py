@@ -13,10 +13,28 @@ Docker-internal.
 
 from __future__ import annotations
 
+import logging
+import time
 from types import TracebackType
 from typing import Any
 
 import httpx
+
+_log = logging.getLogger(__name__)
+
+# Retry policy (CLAUDE.md §5: typed service client must carry a retry
+# policy).  Three attempts with exponential backoff (0.5s, 1.5s between
+# tries) lets us survive the kinds of transient transport blips we saw
+# in Phase 0 — ZAP restarting mid-scan, one-off TCP RSTs — without
+# masking real failures, which bubble through immediately.
+_RETRY_MAX_ATTEMPTS = 3
+_RETRY_BASE_DELAY_S = 0.5
+_RETRY_EXCEPTIONS: tuple[type[Exception], ...] = (
+    httpx.ReadError,
+    httpx.ConnectError,
+    httpx.ReadTimeout,
+    httpx.RemoteProtocolError,
+)
 
 
 class ZapError(RuntimeError):
@@ -57,10 +75,7 @@ class ZapClient:
     # ---- core GET wrapper ----
     def _get(self, path: str, **params: str) -> dict[str, Any]:
         query: dict[str, str] = {"apikey": self._api_key, **params}
-        try:
-            response = self._client.get(path, params=query)
-        except httpx.HTTPError as exc:
-            raise ZapError(f"ZAP request {path} failed: {exc}") from exc
+        response = self._request_with_retry(path, query)
         if response.status_code >= 400:
             raise ZapError(
                 f"ZAP request {path} returned HTTP {response.status_code}: {response.text[:200]}"
@@ -74,6 +89,36 @@ class ZapClient:
         if data.get("code") in {"illegal_parameter", "no_implementor", "internal_error"}:
             raise ZapError(f"ZAP API error at {path}: {data}")
         return data
+
+    def _request_with_retry(self, path: str, query: dict[str, str]) -> httpx.Response:
+        """Issue the GET, retrying only on transient transport errors.
+
+        Non-transient httpx errors (e.g. invalid URL) and any HTTP
+        response — even 5xx — fall through to the caller unretried; the
+        caller decides how to react based on status code / JSON body.
+        ZAP's own API errors are deterministic, so retrying them wastes
+        wall-clock budget on a scan that was already going to fail.
+        """
+        for attempt in range(1, _RETRY_MAX_ATTEMPTS + 1):
+            try:
+                return self._client.get(path, params=query)
+            except _RETRY_EXCEPTIONS as exc:
+                _log.warning(
+                    "zap_client_retry attempt=%d/%d path=%s error_type=%s error=%s",
+                    attempt,
+                    _RETRY_MAX_ATTEMPTS,
+                    path,
+                    type(exc).__name__,
+                    exc,
+                )
+                if attempt >= _RETRY_MAX_ATTEMPTS:
+                    raise ZapError(
+                        f"ZAP request {path} failed after {_RETRY_MAX_ATTEMPTS} attempts: {exc}"
+                    ) from exc
+                time.sleep(_RETRY_BASE_DELAY_S * (3 ** (attempt - 1)))
+            except httpx.HTTPError as exc:
+                raise ZapError(f"ZAP request {path} failed: {exc}") from exc
+        raise AssertionError("unreachable: retry loop exited without return or raise")
 
     # ---- version / health ----
     def version(self) -> str:
