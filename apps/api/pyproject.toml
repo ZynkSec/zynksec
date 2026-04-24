@@ -12,10 +12,13 @@ dependencies = [
   "pydantic-settings>=2.6,<3",
   "uvicorn[standard]>=0.32,<0.33",
   "structlog>=24,<25",
-  # Pinned so Week 2 (DB models) doesn't have to touch this file again.
-  # Imported lazily; Week 1 does not yet open a connection.
   "psycopg[binary,pool]>=3.2,<4",
+  "sqlalchemy>=2.0,<3",
+  "alembic>=1.13,<2",
+  "celery>=5.4,<6",
+  "redis>=5.2,<6",
   "zynksec-schema",
+  "zynksec-db",
 ]
 
 [project.scripts]
@@ -30,3 +33,4 @@ packages = ["src/zynksec_api"]
 
 [tool.uv.sources]
 zynksec-schema = { workspace = true }
+zynksec-db = { workspace = true }
