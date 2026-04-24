@@ -8,6 +8,10 @@ license = { text = "AGPL-3.0-or-later" }
 authors = [{ name = "Zynksec Maintainers" }]
 dependencies = [
   "httpx>=0.27,<0.29",
+  # structlog so scanner-internal log lines auto-merge the worker's
+  # bound contextvars (correlation_id, celery_task_id).  No change to
+  # the ScannerPlugin public contract; additive observability only.
+  "structlog>=24,<25",
   "zynksec-schema",
 ]
 

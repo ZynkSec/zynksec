@@ -36,6 +36,11 @@ class Settings(BaseSettings):
     # ---------- Core ----------
     zynksec_env: Literal["dev", "test", "prod"] = "dev"
     zynksec_log_level: str = "INFO"
+    # JSON-per-line by default (container logs flow straight into Loki
+    # or `docker logs | jq`).  Flip to ``console`` in local dev for a
+    # human-readable coloured renderer.  Production deployments MUST
+    # stay on ``json`` (Week-4 observability contract).
+    zynksec_log_format: Literal["json", "console"] = "json"
     # Defaults to loopback so an accidental launch outside Docker does
     # not bind to every interface (Ruff S104 / Bandit B104).  Compose
     # overrides via ZYNKSEC_API_HOST.

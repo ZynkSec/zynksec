@@ -12,6 +12,11 @@ dependencies = [
   "psycopg[binary]>=3.2,<4",
   "pydantic-settings>=2.6,<3",
   "structlog>=24,<25",
+  # Week-4 observability: error capture into GlitchTip.  The celery
+  # extra hooks Celery's task lifecycle signals so retries/failures
+  # flow into GlitchTip with full stack traces.  No-ops when
+  # SENTRY_DSN is unset (zynksec_worker.observability).
+  "sentry-sdk[celery]>=2.0,<3",
   "zynksec-db",
   "zynksec-schema",
   "zynksec-scanners",

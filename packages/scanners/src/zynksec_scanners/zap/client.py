@@ -13,14 +13,14 @@ Docker-internal.
 
 from __future__ import annotations
 
-import logging
 import time
 from types import TracebackType
 from typing import Any
 
 import httpx
+import structlog
 
-_log = logging.getLogger(__name__)
+_log = structlog.get_logger(__name__)
 
 # Retry policy (CLAUDE.md §5: typed service client must carry a retry
 # policy).  Three attempts with exponential backoff (0.5s, 1.5s between
@@ -104,12 +104,12 @@ class ZapClient:
                 return self._client.get(path, params=query)
             except _RETRY_EXCEPTIONS as exc:
                 _log.warning(
-                    "zap_client_retry attempt=%d/%d path=%s error_type=%s error=%s",
-                    attempt,
-                    _RETRY_MAX_ATTEMPTS,
-                    path,
-                    type(exc).__name__,
-                    exc,
+                    "zap_client_retry",
+                    attempt=attempt,
+                    max_attempts=_RETRY_MAX_ATTEMPTS,
+                    path=path,
+                    error_type=type(exc).__name__,
+                    error=str(exc),
                 )
                 if attempt >= _RETRY_MAX_ATTEMPTS:
                     raise ZapError(

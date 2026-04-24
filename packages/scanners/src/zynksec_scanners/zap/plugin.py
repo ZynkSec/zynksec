@@ -21,13 +21,13 @@ orchestration + mapping.
 
 from __future__ import annotations
 
-import logging
 import time
 import uuid
 from collections.abc import Iterable, Iterator
 from datetime import UTC, datetime
 from typing import Any, cast
 
+import structlog
 from zynksec_schema import (
     Confidence,
     Evidence,
@@ -52,7 +52,7 @@ from zynksec_scanners.zap.client import ZapClient, ZapError
 from zynksec_scanners.zap.owasp_mapping import owasp_for_cwe
 from zynksec_scanners.zap.payload_families import family_for
 
-_log = logging.getLogger(__name__)
+_log = structlog.get_logger(__name__)
 
 _RISK_TO_LEVEL: dict[str, SeverityLevel] = {
     "high": "high",
@@ -117,7 +117,7 @@ class ZapPlugin(ScannerPlugin):
             )
 
         url = context.target.url
-        _log.info("zap.run.start url=%s profile=%s", url, profile.value)
+        _log.info("zap.run.start", url=url, profile=profile.value)
 
         spider_id = self._client.spider_scan(
             url,
@@ -141,7 +141,7 @@ class ZapPlugin(ScannerPlugin):
         )
 
         alerts = self._client.alerts(url)
-        _log.info("zap.run.complete url=%s alerts=%d", url, len(alerts))
+        _log.info("zap.run.complete", url=url, alerts=len(alerts))
         return RawScanResult(
             engine="zap",
             payload={"alerts": alerts, "baseurl": url},
@@ -190,7 +190,7 @@ class ZapPlugin(ScannerPlugin):
         while time.monotonic() < deadline:
             status = int(read_status())
             if status != last_status:
-                _log.info("zap.%s.progress value=%d", name, status)
+                _log.info("zap.progress", phase=name, value=status)
                 last_status = status
             if reached(status):
                 return
@@ -233,7 +233,7 @@ class ZapPlugin(ScannerPlugin):
         risk = (str(alert.get("risk") or "")).strip().lower()
         level: SeverityLevel | None = _RISK_TO_LEVEL.get(risk)
         if level is None:
-            _log.debug("zap.alert.unknown_risk risk=%r plugin_id=%s", risk, plugin_id)
+            _log.debug("zap.alert.unknown_risk", risk=risk, plugin_id=plugin_id)
             return None
 
         confidence_raw = (str(alert.get("confidence") or "")).strip().lower()

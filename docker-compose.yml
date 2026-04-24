@@ -3,8 +3,10 @@ name: zynksec
 # Phase 0 Week 3: adds zap (default) on zynksec-scan + zynksec-targets.
 # juice-shop lives in target-lab/compose-targets.yml so targets are
 # opt-in via `-f target-lab/compose-targets.yml --profile lab`.
-# glitchtip still lands in Week 4 per docs/04 §0.7.  All three network
-# zones are declared here (docs/04 §0.6).
+# Phase 0 Week 4: adds glitchtip (4 services) behind the `obs` profile
+# so daily dev isn't paying ~1.4 GiB of RAM for error-tracking infra
+# you only look at when something breaks.  All three network zones are
+# declared here (docs/04 §0.6).
 
 services:
   postgres:
@@ -64,6 +66,20 @@ services:
         condition: service_healthy
     networks:
       - zynksec-core
+    # /ready is the honest orchestrator signal: 200 only when Postgres
+    # + Redis are both reachable; 503 otherwise.  /health (liveness) is
+    # reserved for "is this process alive?" checks.  Python urllib
+    # because curl is not in the slim Python base image.
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import sys,urllib.request;r=urllib.request.urlopen('http://localhost:8000/api/v1/ready',timeout=3);sys.exit(0 if r.status==200 else 1)"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
 
   worker:
     build:
@@ -162,6 +178,125 @@ services:
     networks:
       - zynksec-core
 
+  # ---------- GlitchTip observability stack (opt-in: --profile obs) ----
+  # GlitchTip is Sentry-compatible, AGPLv3, self-hosted error tracking.
+  # It gets its OWN postgres + redis so "the thing that captures our
+  # errors" doesn't fail when the system it's watching fails.  All four
+  # services live on zynksec-core ONLY — GlitchTip must never reach
+  # zynksec-scan or zynksec-targets.
+  #
+  # Opt-in because the four-container stack costs ~1.4 GiB of RAM and
+  # a developer who is just running ``uv run pytest`` every few minutes
+  # does not need error tracking running continuously.  Activate with:
+  #   docker compose --profile lab --profile obs up -d --build
+  # Sentry SDK no-ops when SENTRY_DSN is empty (Week-4 commit 4), so
+  # api + worker boot identically whether `obs` is active or not.
+
+  glitchtip-postgres:
+    image: postgres:16-alpine
+    container_name: zynksec-glitchtip-postgres
+    restart: unless-stopped
+    profiles:
+      - obs
+    environment:
+      POSTGRES_USER: ${GLITCHTIP_POSTGRES_USER:-glitchtip}
+      POSTGRES_PASSWORD: ${GLITCHTIP_POSTGRES_PASSWORD:-changeme-local-only}
+      POSTGRES_DB: ${GLITCHTIP_POSTGRES_DB:-glitchtip}
+    volumes:
+      - glitchtip-pg-data:/var/lib/postgresql/data
+    networks:
+      - zynksec-core
+    mem_limit: 256m
+    memswap_limit: 256m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  glitchtip-redis:
+    image: redis:7-alpine
+    container_name: zynksec-glitchtip-redis
+    restart: unless-stopped
+    profiles:
+      - obs
+    networks:
+      - zynksec-core
+    mem_limit: 128m
+    memswap_limit: 128m
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  glitchtip-web:
+    image: glitchtip/glitchtip:latest
+    container_name: zynksec-glitchtip-web
+    restart: unless-stopped
+    profiles:
+      - obs
+    depends_on:
+      glitchtip-postgres:
+        condition: service_healthy
+      glitchtip-redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://${GLITCHTIP_POSTGRES_USER:-glitchtip}:${GLITCHTIP_POSTGRES_PASSWORD:-changeme-local-only}@glitchtip-postgres:5432/${GLITCHTIP_POSTGRES_DB:-glitchtip}
+      REDIS_URL: redis://glitchtip-redis:6379/0
+      SECRET_KEY: ${GLITCHTIP_SECRET_KEY:-please-generate-a-32-byte-base64-value}
+      PORT: "8000"
+      EMAIL_URL: consolemail://
+      GLITCHTIP_DOMAIN: http://localhost:8001
+      DEFAULT_FROM_EMAIL: glitchtip@localhost
+      CELERY_WORKER_CONCURRENCY: "1"
+    ports:
+      # Host 8001 so we don't collide with the zynksec api on host 8000.
+      - "8001:8000"
+    networks:
+      - zynksec-core
+    mem_limit: 512m
+    memswap_limit: 512m
+    healthcheck:
+      # GlitchTip image is Python-based; urllib is always present.
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request;urllib.request.urlopen('http://localhost:8000/_health/',timeout=3)"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 90s
+
+  glitchtip-worker:
+    image: glitchtip/glitchtip:latest
+    container_name: zynksec-glitchtip-worker
+    restart: unless-stopped
+    profiles:
+      - obs
+    command: ["./bin/run-celery-with-beat.sh"]
+    depends_on:
+      glitchtip-postgres:
+        condition: service_healthy
+      glitchtip-redis:
+        condition: service_healthy
+      glitchtip-web:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://${GLITCHTIP_POSTGRES_USER:-glitchtip}:${GLITCHTIP_POSTGRES_PASSWORD:-changeme-local-only}@glitchtip-postgres:5432/${GLITCHTIP_POSTGRES_DB:-glitchtip}
+      REDIS_URL: redis://glitchtip-redis:6379/0
+      SECRET_KEY: ${GLITCHTIP_SECRET_KEY:-please-generate-a-32-byte-base64-value}
+      EMAIL_URL: consolemail://
+      DEFAULT_FROM_EMAIL: glitchtip@localhost
+      CELERY_WORKER_CONCURRENCY: "1"
+    networks:
+      - zynksec-core
+    mem_limit: 512m
+    memswap_limit: 512m
+    # No healthcheck — Celery workers don't expose an HTTP probe.
+    # Container health is implied by the process staying alive + logs.
+
 networks:
   zynksec-core:
     name: zynksec-core
@@ -175,3 +310,7 @@ networks:
 volumes:
   postgres-data:
     name: zynksec-postgres-data
+  glitchtip-pg-data:
+    # Only created when `--profile obs` is active; survives a profile-off
+    # restart so captured events persist across dev sessions.
+    name: zynksec-glitchtip-pg-data

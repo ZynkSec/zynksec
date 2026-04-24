@@ -15,11 +15,16 @@ import structlog
 from fastapi import HTTPException, status
 
 
-def _current_request_id() -> str | None:
-    """Pull the request id bound by ``RequestIdMiddleware``."""
+def _current_correlation_id() -> str | None:
+    """Pull the correlation id bound by ``CorrelationIdMiddleware``.
+
+    The error-response body still exposes it under the ``request_id``
+    key per CLAUDE.md §4 (locked API contract) — only the log/header
+    name is ``correlation_id``.  Same value, two labels.
+    """
     bound = structlog.contextvars.get_contextvars()
     if isinstance(bound, dict):
-        value = bound.get("request_id")
+        value = bound.get("correlation_id")
         return str(value) if value is not None else None
     return None
 
@@ -34,7 +39,7 @@ class ZynksecError(HTTPException):
         body: dict[str, Any] = {
             "code": self.code,
             "message": message,
-            "request_id": _current_request_id(),
+            "request_id": _current_correlation_id(),
         }
         if details is not None:
             body["details"] = details

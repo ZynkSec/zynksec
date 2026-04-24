@@ -11,6 +11,7 @@ see ``docs/decisions/`` once the folder exists.
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -27,6 +28,7 @@ class WorkerSettings(BaseSettings):
     )
 
     zynksec_log_level: str = "INFO"
+    zynksec_log_format: Literal["json", "console"] = "json"
     database_url: str = "postgresql+psycopg://zynksec:changeme-local-only@postgres:5432/zynksec"
     celery_broker_url: str = "redis://redis:6379/1"
     celery_result_backend: str = "redis://redis:6379/2"
