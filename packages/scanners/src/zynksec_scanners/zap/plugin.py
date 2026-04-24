@@ -1,11 +1,18 @@
 """OWASP ZAP plugin — the one concrete :class:`ScannerPlugin` in Phase 0.
 
-Runs the classic ZAP Stable flow against a web target:
+Phase 0 ships the PASSIVE scan profile only:
 
-    1. spider           — quick crawl, bounded by max-children + max-duration
-    2. passive alerts   — ZAP's passive rules run as the spider crawls
-    3. active scan      — bounded by max-duration
-    4. alerts view      — fetch everything ZAP noticed
+    1. spider                          — quick crawl, bounded
+    2. passive-scan queue drain        — pscan/view/recordsToScan → 0
+    3. alerts view                     — fetch everything ZAP noticed
+
+Active-scan profiles (``SAFE_ACTIVE``, ``AGGRESSIVE``) are declared on
+:class:`zynksec_scanners.types.ScanProfile` but not implemented here;
+they raise :class:`NotImplementedError` until Glitchtip + structlog
+correlation give us the observability to diagnose scan-side failures
+live.  The decision is memorialised in the Week-3 post-mortem — active
+scanning has unbounded off-heap growth on parameter-rich targets and
+we exhausted the cgroup-tuning lever across four iterations.
 
 Each alert becomes zero-or-one Findings via :meth:`normalize`.  CLAUDE.md §5:
 only :class:`ZapClient` speaks HTTP to :8090 — this plugin is pure
@@ -34,7 +41,13 @@ from zynksec_schema import (
 )
 
 from zynksec_scanners.base import ScannerPlugin
-from zynksec_scanners.types import HealthStatus, RawScanResult, ScanContext, Target
+from zynksec_scanners.types import (
+    HealthStatus,
+    RawScanResult,
+    ScanContext,
+    ScanProfile,
+    Target,
+)
 from zynksec_scanners.zap.client import ZapClient, ZapError
 from zynksec_scanners.zap.owasp_mapping import owasp_for_cwe
 from zynksec_scanners.zap.payload_families import family_for
@@ -59,23 +72,24 @@ _CONFIDENCE_MAP: dict[str, Confidence] = {
 
 
 class ZapPlugin(ScannerPlugin):
-    """OWASP ZAP Stable — Phase-0 passive + bounded-active scan."""
+    """OWASP ZAP Stable — Phase-0 PASSIVE profile."""
 
     id = "zap"
     display_name = "OWASP ZAP"
     engine_version = "stable"
     supported_target_kinds: set[str] = {"web_app"}
-    supported_intensities: set[str] = {"passive", "standard"}
+    supported_intensities: set[str] = {ScanProfile.PASSIVE.value}
     required_capabilities: set[str] = set()
 
-    # Phase-0 tuning.  These ceilings keep the integration test under
-    # the 5-minute budget; Phase 1 makes them per-scan config.
-    _POLL_INTERVAL_S: float = 5.0
+    # Phase-0 tuning.  Spider bounds keep the integration test under
+    # the 5-minute budget; the passive queue typically drains in under
+    # a minute on a Juice-Shop-sized target.  Phase 1 makes these
+    # per-scan config.
+    _POLL_INTERVAL_S: float = 2.0
     _SPIDER_CEILING_S: float = 120.0
-    _ASCAN_CEILING_S: float = 180.0
+    _PSCAN_DRAIN_CEILING_S: float = 120.0
     _SPIDER_MAX_CHILDREN: int = 25
     _SPIDER_MAX_DURATION_MIN: int = 2
-    _ASCAN_MAX_DURATION_MIN: int = 2
     _RESPONSE_EXCERPT_LIMIT: int = 4096
 
     def __init__(self, client: ZapClient) -> None:
@@ -89,17 +103,21 @@ class ZapPlugin(ScannerPlugin):
         # Reachability + version probe.  Raises ZapError if ZAP isn't
         # up; the worker catches and marks the scan failed.
         version = self._client.version()
-        # Bound the scan up front so runs are predictable.
         self._client.set_spider_max_duration_mins(self._SPIDER_MAX_DURATION_MIN)
-        self._client.set_ascan_max_duration_mins(self._ASCAN_MAX_DURATION_MIN)
         return ScanContext(
             target=target,
             metadata={"engine_version": version},
         )
 
     def run(self, context: ScanContext) -> RawScanResult:
+        profile = context.target.scan_profile
+        if profile is not ScanProfile.PASSIVE:
+            raise NotImplementedError(
+                f"scan profile {profile.value!r} pending Week 4 observability"
+            )
+
         url = context.target.url
-        _log.info("zap.run.start url=%s", url)
+        _log.info("zap.run.start url=%s profile=%s", url, profile.value)
 
         spider_id = self._client.spider_scan(
             url,
@@ -109,13 +127,17 @@ class ZapPlugin(ScannerPlugin):
             lambda: self._client.spider_status(spider_id),
             ceiling_s=self._SPIDER_CEILING_S,
             name="spider",
+            reached=lambda status: status >= 100,
         )
 
-        ascan_id = self._client.ascan_scan(url)
+        # Wait for the passive-scan queue to drain.  ZAP's passive
+        # rules run asynchronously during the crawl, so "spider done"
+        # doesn't mean "alerts finalised"; we need recordsToScan == 0.
         self._poll(
-            lambda: self._client.ascan_status(ascan_id),
-            ceiling_s=self._ASCAN_CEILING_S,
-            name="ascan",
+            lambda: self._client.pscan_records_to_scan(),
+            ceiling_s=self._PSCAN_DRAIN_CEILING_S,
+            name="pscan",
+            reached=lambda remaining: remaining == 0,
         )
 
         alerts = self._client.alerts(url)
@@ -156,19 +178,25 @@ class ZapPlugin(ScannerPlugin):
         *,
         ceiling_s: float,
         name: str,
+        reached: Any,
     ) -> None:
+        """Poll ``read_status`` at ``_POLL_INTERVAL_S`` until ``reached``.
+
+        ``reached`` is the predicate that ends the loop — spider uses
+        ``status >= 100``; passive-scan drain uses ``remaining == 0``.
+        """
         deadline = time.monotonic() + ceiling_s
-        last_status = -1
+        last_status: int | None = None
         while time.monotonic() < deadline:
             status = int(read_status())
             if status != last_status:
-                _log.info("zap.%s.progress status=%d", name, status)
+                _log.info("zap.%s.progress value=%d", name, status)
                 last_status = status
-            if status >= 100:
+            if reached(status):
                 return
             time.sleep(self._POLL_INTERVAL_S)
         raise TimeoutError(
-            f"ZAP {name} did not reach 100% within {ceiling_s:.0f}s (last={last_status})"
+            f"ZAP {name} did not settle within {ceiling_s:.0f}s (last={last_status})"
         )
 
     def _normalize_alerts(

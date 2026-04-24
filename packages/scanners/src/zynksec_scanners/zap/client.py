@@ -146,28 +146,19 @@ class ZapClient:
     def set_spider_max_duration_mins(self, minutes: int) -> None:
         self._get("/JSON/spider/action/setOptionMaxDuration/", Integer=str(minutes))
 
-    # ---- active scan ----
-    def ascan_scan(self, url: str) -> str:
-        payload = self._get(
-            "/JSON/ascan/action/scan/",
-            url=url,
-            recurse="true",
-            inScopeOnly="false",
-        )
-        return str(payload.get("scan", "")) or ""
+    # ---- passive scan ----
+    def pscan_records_to_scan(self) -> int:
+        """Return the number of requests still queued for passive analysis.
 
-    def ascan_status(self, scan_id: str) -> int:
-        payload = self._get("/JSON/ascan/view/status/", scanId=scan_id)
+        ZAP runs its passive rules asynchronously as the spider crawls,
+        so the plugin must wait for this counter to reach 0 before
+        reading alerts — otherwise late-arriving findings are missed.
+        """
+        payload = self._get("/JSON/pscan/view/recordsToScan/")
         try:
-            return int(payload.get("status", "0"))
+            return int(payload.get("recordsToScan", "0"))
         except (TypeError, ValueError):
             return 0
-
-    def set_ascan_max_duration_mins(self, minutes: int) -> None:
-        self._get(
-            "/JSON/ascan/action/setOptionMaxScanDurationInMins/",
-            Integer=str(minutes),
-        )
 
     # ---- alerts ----
     def alerts(self, baseurl: str) -> list[dict[str, Any]]:

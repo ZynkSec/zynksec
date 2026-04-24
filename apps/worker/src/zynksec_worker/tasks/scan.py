@@ -28,7 +28,7 @@ from zynksec_db import (
     engine_from_url,
     make_session_factory,
 )
-from zynksec_scanners import ScannerPlugin, Target
+from zynksec_scanners import ScannerPlugin, ScanProfile, Target
 from zynksec_schema import Finding
 
 from zynksec_worker.celery_app import celery_app
@@ -49,7 +49,13 @@ def _session_factory() -> sessionmaker[Session]:
 
 
 def _load_target(factory: sessionmaker[Session], scan_uuid: uuid.UUID) -> Target:
-    """Load the Scan row and construct a :class:`Target` for the plugin."""
+    """Load the Scan row and construct a :class:`Target` for the plugin.
+
+    Phase 0 hardcodes ``scan_profile=ScanProfile.PASSIVE`` — the scans
+    table has no ``scan_profile`` column yet, and active-scan profiles
+    aren't implemented.  Week 4+ surfaces scan_profile on the API and
+    reads it here.
+    """
     with factory() as session:
         scan = session.get(Scan, scan_uuid)
         if scan is None:
@@ -59,6 +65,7 @@ def _load_target(factory: sessionmaker[Session], scan_uuid: uuid.UUID) -> Target
             url=scan.target_url,
             project_id=scan.project_id,
             scan_id=scan.id,
+            scan_profile=ScanProfile.PASSIVE,
         )
 
 

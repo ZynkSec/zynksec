@@ -7,7 +7,14 @@ sub-packages (``.zap``, future ``.nuclei``, ...).
 """
 
 from zynksec_scanners.base import ScannerPlugin
-from zynksec_scanners.types import HealthStatus, RawScanResult, ScanContext, Target, TargetKind
+from zynksec_scanners.types import (
+    HealthStatus,
+    RawScanResult,
+    ScanContext,
+    ScanProfile,
+    Target,
+    TargetKind,
+)
 
 __version__ = "0.0.0"
 
@@ -15,6 +22,7 @@ __all__ = [
     "HealthStatus",
     "RawScanResult",
     "ScanContext",
+    "ScanProfile",
     "ScannerPlugin",
     "Target",
     "TargetKind",

@@ -10,9 +10,25 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Any, Literal
 
 TargetKind = Literal["web_app", "api", "repo"]
+
+
+class ScanProfile(StrEnum):
+    """How aggressively the engine probes the target.
+
+    Phase 0 ships ``PASSIVE`` only — spider + ZAP's passive analyzers.
+    Active-scan profiles are declared here so the contract is stable,
+    but their implementations raise :class:`NotImplementedError` until
+    we have Glitchtip + structlog correlation wired (Week 4) and the
+    API exposes ``scan_profile`` as a request parameter.
+    """
+
+    PASSIVE = "passive"
+    SAFE_ACTIVE = "safe_active"
+    AGGRESSIVE = "aggressive"
 
 
 @dataclass(frozen=True)
@@ -22,12 +38,16 @@ class Target:
     In Phase 0 we scan a single URL at a time.  ``project_id`` and
     ``scan_id`` are carried on the target so :meth:`normalize` can
     compute the fingerprint without an extra argument thread.
+    ``scan_profile`` selects the engine's intensity — worker hardcodes
+    :attr:`ScanProfile.PASSIVE` in Phase 0; Week 4+ will surface it as
+    a request parameter.
     """
 
     kind: TargetKind
     url: str
     project_id: uuid.UUID
     scan_id: uuid.UUID
+    scan_profile: ScanProfile = ScanProfile.PASSIVE
 
 
 @dataclass(frozen=True)
