@@ -30,6 +30,9 @@ class WorkerSettings(BaseSettings):
     database_url: str = "postgresql+psycopg://zynksec:changeme-local-only@postgres:5432/zynksec"
     celery_broker_url: str = "redis://redis:6379/1"
     celery_result_backend: str = "redis://redis:6379/2"
+    # ZAP — the worker's only external HTTP dep in Phase 0.
+    zap_api_url: str = "http://zap:8090"
+    zap_api_key: str = "changeme-local-only"
 
 
 @lru_cache(maxsize=1)

@@ -1,46 +1,30 @@
 """Abstract scanner plugin contract.
 
-Every engine Zynksec integrates (ZAP, Nuclei, testssl, Subfinder, ...)
-subclasses :class:`ScannerPlugin`.  The worker depends on this
-abstraction, never on a concrete engine (CLAUDE.md §3 — D: Dependency
-Inversion).  Adding a new engine is subclass + Dockerfile + YAML config
-(docs/03 §6, docs/04 §0.10).
+Every engine Zynksec integrates (ZAP, Nuclei, testssl, ...) subclasses
+:class:`ScannerPlugin`.  The worker depends on this abstraction, never
+on a concrete engine (CLAUDE.md §3 — D: Dependency Inversion).  Adding
+a new engine is subclass + Dockerfile + compose entry.
 
-Phase 0 Week 1 ships signatures only; all methods raise
-``NotImplementedError``.  Week 3 lands the ZAP implementation; Phase 1
-adds ``pause``, ``cancel``, and ``resume`` once we know what ZAP allows
-mid-scan (docs/04 §0.10).
+Contract per ``docs/04_phase0_scaffolding.md`` §0.10.  Phase 1 adds
+``pause()``, ``cancel()``, and ``resume()`` once we know what each
+engine allows mid-scan.
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
-from typing import Any
 
-# Phase-0 placeholder aliases.  Concrete types land with their sibling
-# packages — Target/Scan with the DB models (Week 2), Finding with the
-# shared-schema Finding module (Week 3), and engine-native
-# ScanContext/RawScanResult inside each plugin subpackage.  Kept as
-# ``Any`` at this boundary so downstream packages can introduce their
-# real types without forcing a breaking edit here.
-Target = Any
-ScanContext = Any
-RawScanResult = Any
-RawFinding = Any
-Finding = Any
-HealthStatus = Any
+from zynksec_schema import Finding
+
+from zynksec_scanners.types import HealthStatus, RawScanResult, ScanContext, Target
 
 
 class ScannerPlugin(ABC):
     """Abstract contract every Zynksec scanner engine implements.
 
-    Class-level attributes carry the engine's static metadata; instance
-    methods drive the scan lifecycle.  The orchestrator guarantees a
-    pre-verified target, a writable working directory, and gated egress
-    (docs/03 §6.2).  In return the subclass promises to respect the
-    rate-limit config, exit cleanly on cancellation, and never write
-    outside its working directory (docs/03 §6.3).
+    Class-level attributes carry the engine's static metadata.  The
+    six lifecycle methods below are the whole Phase-0 surface.
     """
 
     # ---- Static metadata (subclasses override) ----
@@ -54,43 +38,41 @@ class ScannerPlugin(ABC):
     # ---- Lifecycle ----
     @abstractmethod
     def supports(self, target: Target) -> bool:
-        """Return True iff this engine can scan this target kind."""
-        raise NotImplementedError
+        """Return True iff this engine can scan this target."""
 
     @abstractmethod
-    def prepare(self, scan: ScanContext) -> ScanContext:
-        """Build engine-specific config and validate reachability.
+    def prepare(self, target: Target) -> ScanContext:
+        """Build engine-specific state and validate reachability.
 
         Returns an opaque context the orchestrator passes to
-        :meth:`run` and :meth:`teardown`.
+        :meth:`run`, :meth:`normalize`, and :meth:`teardown`.
         """
-        raise NotImplementedError
 
     @abstractmethod
     def run(self, context: ScanContext) -> RawScanResult:
-        """Execute the scan against the prepared context.
-
-        Blocking in Phase 0; Phase 1+ streams raw findings via an async
-        iterator (docs/03 §6.1).
-        """
-        raise NotImplementedError
+        """Execute the scan.  Blocking in Phase 0."""
 
     @abstractmethod
-    def normalize(self, raw: RawScanResult) -> Iterator[Finding]:
-        """Map engine-native output to canonical :class:`Finding`s.
+    def normalize(
+        self,
+        raw: RawScanResult,
+        context: ScanContext,
+    ) -> Iterator[Finding]:
+        """Map engine-native output to canonical Findings.
 
-        One raw finding MAY yield zero or many Findings.  Evidence
-        request/response/proof must be attached here.
+        Takes the context so it can read ``target.project_id`` /
+        ``scan_id`` while fingerprinting.
         """
-        raise NotImplementedError
 
     @abstractmethod
     def teardown(self, context: ScanContext) -> None:
-        """Release engine resources and clear transient sessions."""
-        raise NotImplementedError
+        """Release engine resources and clear transient state.
+
+        Best-effort: implementations should log-and-swallow errors
+        rather than propagate (a failed cleanup must not mask a
+        successful scan).
+        """
 
     @abstractmethod
     def health_check(self) -> HealthStatus:
-        """Report whether the engine container is reachable and
-        responsive right now."""
-        raise NotImplementedError
+        """Report whether the engine is reachable and responsive."""

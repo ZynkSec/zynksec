@@ -1,9 +1,9 @@
 """Scan endpoints — POST /api/v1/scans, GET /api/v1/scans/{id}.
 
-Handlers use :class:`ScanRepository` via FastAPI's ``Depends`` so they
-never touch a raw session-or-query (CLAUDE.md §3).  Task arguments are
-stringified UUIDs because Celery payloads are primitives only
-(CLAUDE.md §5).
+Handlers use :class:`ScanRepository` and :class:`FindingRepository` via
+FastAPI's ``Depends`` so they never touch raw sessions or queries
+(CLAUDE.md §3).  Task arguments are stringified UUIDs — Celery payloads
+are primitives only (CLAUDE.md §5).
 """
 
 from __future__ import annotations
@@ -14,12 +14,12 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-from zynksec_db import Project, Scan, ScanRepository
+from zynksec_db import FindingRepository, Project, Scan, ScanRepository
 
 from zynksec_api.celery_client import enqueue_scan
 from zynksec_api.db import get_session
 from zynksec_api.exceptions import ScanNotFound
-from zynksec_api.schemas import ScanCreate, ScanRead
+from zynksec_api.schemas import ScanCreate, ScanRead, finding_from_row
 
 router = APIRouter(prefix="/api/v1/scans", tags=["scans"])
 
@@ -31,10 +31,16 @@ def get_scan_repository() -> ScanRepository:
     return ScanRepository()
 
 
-# Typed Depends aliases (FastAPI's modern Annotated style) — also keeps
+def get_finding_repository() -> FindingRepository:
+    """FastAPI dependency — returns a fresh :class:`FindingRepository`."""
+    return FindingRepository()
+
+
+# Typed Depends aliases (FastAPI's modern Annotated style) — keeps
 # Ruff B008 happy since defaults no longer contain a function call.
 SessionDep = Annotated[Session, Depends(get_session)]
 ScanRepoDep = Annotated[ScanRepository, Depends(get_scan_repository)]
+FindingRepoDep = Annotated[FindingRepository, Depends(get_finding_repository)]
 
 
 def _resolve_project(session: Session, project_id: uuid.UUID | None) -> Project:
@@ -62,6 +68,25 @@ def _get_or_create_local_dev(session: Session) -> Project:
     return project
 
 
+def _scan_to_read(scan: Scan, findings: list[object]) -> ScanRead:
+    """Explicit ORM -> Pydantic construction.
+
+    Constructed field-by-field (rather than ``model_validate(scan)``)
+    so the ``findings`` list is always well-typed — the ORM row has
+    no ``findings`` attribute.
+    """
+    return ScanRead(
+        id=scan.id,
+        project_id=scan.project_id,
+        target_url=scan.target_url,
+        status=scan.status,  # type: ignore[arg-type]
+        started_at=scan.started_at,
+        completed_at=scan.completed_at,
+        created_at=scan.created_at,
+        findings=findings,  # type: ignore[arg-type]
+    )
+
+
 @router.post(
     "",
     status_code=status.HTTP_202_ACCEPTED,
@@ -84,20 +109,25 @@ def create_scan(
     session.commit()
 
     enqueue_scan(str(scan.id))
-    return ScanRead.model_validate(scan)
+    # Freshly queued scans have no findings yet.
+    return _scan_to_read(scan, findings=[])
 
 
 @router.get(
     "/{scan_id}",
     response_model=ScanRead,
-    summary="Read a scan by id",
+    summary="Read a scan by id (with its findings)",
 )
 def get_scan(
     scan_id: uuid.UUID,
     session: SessionDep,
     repo: ScanRepoDep,
+    finding_repo: FindingRepoDep,
 ) -> ScanRead:
     scan = repo.get(session, scan_id)
     if scan is None:
         raise ScanNotFound(f"scan {scan_id} does not exist")
-    return ScanRead.model_validate(scan)
+
+    finding_rows = finding_repo.list(session, scan_id=scan_id)
+    findings = [finding_from_row(row) for row in finding_rows]
+    return _scan_to_read(scan, findings)

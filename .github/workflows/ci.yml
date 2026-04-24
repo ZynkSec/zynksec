@@ -131,8 +131,12 @@ jobs:
           cache-to: type=gha,mode=max
 
   integration-tests:
-    name: integration-tests (api + worker + postgres)
+    name: integration-tests (api + worker + zap + juice-shop)
     runs-on: ubuntu-latest
+    # ZAP cold boot + full baseline scan against juice-shop runs ~5 min
+    # on GitHub's standard runners; 20 min leaves headroom for
+    # image pulls, compose up, and the non-ZAP job steps.
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -147,19 +151,36 @@ jobs:
       - name: Prepare .env
         # docker compose's env_file needs the file on disk.
         run: cp .env.example .env
-      - name: Start Compose stack
+      - name: Start Compose stack (+ lab profile for juice-shop)
         run: |
           set -euo pipefail
           docker compose \
             -f docker-compose.yml \
+            -f target-lab/compose-targets.yml \
             -f tests/integration/docker-compose.test.yml \
-            --profile dev \
-            up -d postgres redis worker api mailpit
+            --profile dev --profile lab \
+            up -d postgres redis worker api mailpit zap juice-shop
+      - name: Wait for ZAP + juice-shop to report healthy
+        run: |
+          set -euo pipefail
+          for svc in zynksec-zap zynksec-juice-shop; do
+            echo "waiting for $svc..."
+            for _ in $(seq 1 90); do
+              status=$(docker inspect --format='{{.State.Health.Status}}' "$svc" 2>/dev/null || echo unknown)
+              if [ "$status" = "healthy" ]; then
+                echo "$svc healthy"
+                break
+              fi
+              sleep 2
+            done
+            test "$status" = "healthy" || { echo "$svc never became healthy ($status)"; exit 1; }
+          done
       - name: Apply Alembic migrations
         run: |
           set -euo pipefail
           docker compose \
             -f docker-compose.yml \
+            -f target-lab/compose-targets.yml \
             -f tests/integration/docker-compose.test.yml \
             exec -T api \
             alembic -c apps/api/alembic.ini upgrade head
@@ -168,12 +189,13 @@ jobs:
           # The workflow manages compose lifecycle; the pytest fixture
           # skips its own up/down when this is set.
           ZYNKSEC_TEST_KEEP_STACK: "1"
-        run: uv run pytest tests/integration/ -v
+        run: uv run pytest tests/integration/ -v --timeout=600
       - name: Dump Compose logs on failure
         if: failure()
         run: |
           docker compose \
             -f docker-compose.yml \
+            -f target-lab/compose-targets.yml \
             -f tests/integration/docker-compose.test.yml \
             logs --no-color
       - name: Tear down Compose stack
@@ -181,5 +203,6 @@ jobs:
         run: |
           docker compose \
             -f docker-compose.yml \
+            -f target-lab/compose-targets.yml \
             -f tests/integration/docker-compose.test.yml \
             down -v
