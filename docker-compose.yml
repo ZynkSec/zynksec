@@ -1,10 +1,9 @@
 name: zynksec
 
-# Phase 0 Week 1 scope: postgres, redis, api.  Worker / ZAP / targets /
-# mailpit / glitchtip land in later weeks per docs/04 §0.7.  All three
-# network zones are declared now (docs/04 §0.6) even though only
-# zynksec-core carries traffic this week — keeps the topology stable
-# as services arrive.
+# Phase 0 Week 2: postgres, redis, api, worker (default) + mailpit (dev).
+# ZAP / juice-shop / glitchtip still land in later weeks per docs/04 §0.7.
+# All three network zones are declared so the topology stays stable as
+# services arrive (docs/04 §0.6).
 
 services:
   postgres:
@@ -62,6 +61,43 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    networks:
+      - zynksec-core
+
+  worker:
+    build:
+      context: .
+      dockerfile: infra/docker/worker.Dockerfile
+    image: zynksec/worker:dev
+    container_name: zynksec-worker
+    restart: unless-stopped
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # Worker bridges core (Celery broker + Postgres) and scan (ZAP
+    # lands Week 3) networks.  It must never touch zynksec-targets
+    # directly — docs/04 §0.6 + CLAUDE.md §5.
+    networks:
+      - zynksec-core
+      - zynksec-scan
+
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: zynksec-mailpit
+    restart: unless-stopped
+    profiles:
+      - dev
+    # Host-published because the Mailpit UI is useful to a human
+    # developer.  Phase 0 sends no mail yet (docs/04 §0.15); the
+    # service is here so the first feature that needs email in Phase
+    # 2 finds SMTP already wired.
+    ports:
+      - "1025:1025" # SMTP
+      - "8025:8025" # Web UI
     networks:
       - zynksec-core
 
