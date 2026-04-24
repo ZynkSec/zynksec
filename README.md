@@ -26,6 +26,134 @@ Modern SaaS is built faster than ever — Next.js + Vercel + Supabase + Clerk + 
 
 Zynksec is the tool a solo founder, a small team, or a security-curious developer should be able to reach for on day one — free, self-hostable, and aimed at the security mistakes modern stacks actually make.
 
+## Quick start
+
+Zynksec runs locally via Docker Compose. Three named startup modes
+cover the common workflows:
+
+### Lean dev (default)
+
+```bash
+git clone https://github.com/ZynkSec/zynksec.git
+cd zynksec
+cp .env.example .env
+docker compose up -d --build
+```
+
+Brings up the core stack: api (port 8000), worker, postgres, redis.
+No scanning, no error tracking, no lab target. Enough to poke at
+`GET /api/v1/health`, `GET /api/v1/ready`, and run unit tests.
+
+### Lab scan
+
+```bash
+docker compose --profile lab up -d --build
+docker compose exec api alembic -c apps/api/alembic.ini upgrade head
+```
+
+Adds `zap` and `juice-shop` on isolated Docker networks. Run a real
+passive scan against the intentionally-vulnerable
+[OWASP Juice Shop](https://owasp.org/www-project-juice-shop/) target:
+
+```bash
+# POST a scan
+curl -X POST http://localhost:8000/api/v1/scans \
+  -H 'content-type: application/json' \
+  -d '{"target_url":"http://juice-shop:3000/"}'
+# -> {"id":"3f16096a-...","status":"queued","findings":[]}
+
+# Poll until complete (passive scan runs in ~15–30 s)
+curl http://localhost:8000/api/v1/scans/3f16096a-8c1e-4721-b387-39652e9304bd
+```
+
+A complete scan response (trimmed to three of the 327 findings on
+this run) looks like:
+
+```json
+{
+  "id": "3f16096a-8c1e-4721-b387-39652e9304bd",
+  "target_url": "http://juice-shop:3000/",
+  "status": "completed",
+  "started_at": "2026-04-24T18:09:39.777024Z",
+  "completed_at": "2026-04-24T18:10:00.620279Z",
+  "findings": [
+    {
+      "taxonomy": { "zynksec_id": "ZYN-DAST-CSP_MISSING-10038", "cwe": 693 },
+      "severity": { "level": "medium", "confidence": "high" },
+      "location": { "url": "http://juice-shop:3000/", "method": "GET" }
+    },
+    {
+      "taxonomy": { "zynksec_id": "ZYN-DAST-COOKIE_HTTPONLY-10010", "cwe": 1004 },
+      "severity": { "level": "low", "confidence": "medium" },
+      "location": { "url": "http://juice-shop:3000/rest/user/whoami", "method": "GET" }
+    },
+    {
+      "taxonomy": { "zynksec_id": "ZYN-DAST-SRI_MISSING-90003", "cwe": 345 },
+      "severity": { "level": "medium", "confidence": "high" },
+      "location": { "url": "http://juice-shop:3000/", "method": "GET" }
+    }
+  ]
+}
+```
+
+This mode is what the integration tests run under.
+
+### Full observability
+
+```bash
+docker compose --profile lab --profile obs up -d --build
+```
+
+Adds the four-container GlitchTip stack (web, worker, postgres,
+redis) on top of the lab scan stack. Use this when you need error
+capture working — normal coding doesn't.
+
+## Set up error tracking
+
+GlitchTip is **opt-in**. Bring it up with `--profile obs` only when
+you need error capture — running it always costs ~300 MiB of RAM for
+no benefit during normal coding.
+
+First-run setup is manual (GlitchTip is a Django app; the
+superuser + project + DSN flow is the same as Sentry):
+
+1. Start the `obs` profile (see above).
+2. Create a superuser:
+
+   ```bash
+   docker compose exec glitchtip-web ./manage.py createsuperuser
+   ```
+
+3. Open GlitchTip at <http://localhost:8001>, log in, create an
+   organization, create a project, and copy the project DSN from
+   the project's SDK Keys page.
+4. Paste the DSN into `.env`:
+
+   ```env
+   SENTRY_DSN=http://<key>@localhost:8001/<project-id>
+   ```
+
+5. Restart the api + worker so they pick up the DSN:
+
+   ```bash
+   docker compose up -d --force-recreate api worker
+   ```
+
+6. Trigger a deliberate test exception (any handler that raises will
+   do). The event appears in GlitchTip with the request's
+   `correlation_id` attached as a tag.
+
+![GlitchTip event with correlation_id tag](docs/screenshots/glitchtip-capture.png)
+
+> **TODO(hugo):** screenshot placeholder — the image above won't
+> render until `docs/screenshots/glitchtip-capture.png` is pasted in.
+> The agent that produced this PR is headless and couldn't capture
+> it directly.
+
+When `SENTRY_DSN` is empty (the default in `.env.example`), the
+Sentry SDK initialises as a no-op — api + worker boot identically,
+no warnings, no retries against a missing collector.
+
 ## Current status
 
 | Phase                               | Scope                                                                                           | State       |
@@ -46,8 +174,21 @@ Detailed scoping and roadmap lives in [`docs/01_scoping_and_roadmap.md`](docs/01
 - **Backend:** Python 3.12, FastAPI, Celery, Redis, PostgreSQL.
 - **Frontend:** Next.js, Tailwind, shadcn/ui, Auth.js + GitHub OAuth.
 - **Scanners:** containerized workers (OWASP ZAP, Nuclei, ProjectDiscovery suite, etc.).
+- **Observability:** structlog JSON logs with a `correlation_id` that threads api → Celery task → worker → scanner; self-hosted GlitchTip for error capture (opt-in via `obs` profile); `/api/v1/ready` probe distinguishes liveness from readiness.
 - **Deployment:** Docker Compose for local dev, single cheap VPS for Phase 5, Kubernetes only when there's a reason.
 - **Schema:** Alembic migrations over a custom PostgreSQL schema — not DefectDojo.
+
+### Network isolation
+
+Zynksec uses three Docker Compose networks. Each service joins only
+the networks it legitimately needs, and the scan-target network is
+`internal: true` — containers on it cannot reach the host or the
+public internet, which keeps an accidental or compromised scanner
+from using our stack as a traffic source:
+
+- `zynksec-core` — api, worker, postgres, redis, mailpit, GlitchTip.
+- `zynksec-scan` — worker and zap only. Worker drives ZAP's REST API.
+- `zynksec-targets` — zap and lab targets only. `internal: true`; the worker never joins this network, so it reaches the target only via ZAP.
 
 Full architecture in [`docs/03_architecture.md`](docs/03_architecture.md).
 
