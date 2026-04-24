@@ -81,8 +81,11 @@ zynksec/
 │   │       ├── __init__.py
 │   │       ├── main.py             # FastAPI app
 │   │       ├── config.py           # pydantic-settings
-│   │       ├── db.py
-│   │       ├── models/             # SQLAlchemy models
+│   │       ├── db.py               # engine + get_session() dependency
+│   │       ├── celery_client.py    # enqueue Celery tasks from the API
+│   │       ├── exceptions.py       # canonical {code,message,request_id}
+│   │       # ORM models live in packages/db/src/zynksec_db/models/
+│   │       # (moved out of apps/api in Week 2 so apps/worker can share them)
 │   │       ├── routers/            # /scans, /projects, /health
 │   │       └── schemas/            # request/response pydantic models
 │   ├── worker/                     # Celery worker
@@ -108,6 +111,14 @@ zynksec/
 │   │   └── src/zynksec_schema/
 │   │       ├── __init__.py
 │   │       └── finding.py          # Finding v1 (Phase 0 subset)
+│   ├── db/                         # Python: SQLAlchemy 2.x ORM + repositories
+│   │   ├── pyproject.toml          # — shared by apps/api and apps/worker
+│   │   └── src/zynksec_db/         #   (added Week 2)
+│   │       ├── __init__.py
+│   │       ├── base.py             # DeclarativeBase + naming convention
+│   │       ├── session.py          # engine_from_url, make_session_factory
+│   │       ├── models/             # Project, Scan, Finding
+│   │       └── repositories/       # Repository[T], ScanRepository, ...
 │   └── scanners/                   # Python: scanner plugin contract + ZAP impl
 │       ├── pyproject.toml
 │       └── src/zynksec_scanners/
@@ -144,7 +155,7 @@ zynksec/
 
 Two principles drive this layout:
 
-1. **`apps/` are deployable units, `packages/` are libraries.** Anything imported by more than one app lives in `packages/`. The Finding schema is the most important shared package — it's the contract every scanner and every consumer agrees on.
+1. **`apps/` are deployable units, `packages/` are libraries.** Anything imported by more than one app lives in `packages/`. The Finding schema is the most important shared package — it's the contract every scanner and every consumer agrees on. ORM models also live in a shared package (`packages/db`) because both `apps/api` and `apps/worker` need them; putting them in `apps/api/src/zynksec_api/models/` would force a cross-app import in the worker, which CLAUDE.md §5 forbids.
 2. **`infra/` is "things that build or run the apps,"** not "things the apps import." Dockerfiles, Compose snippets, and init SQL live there. Application code never imports from `infra/`.
 
 ## 0.5 Tech choices, restated
@@ -158,7 +169,7 @@ These are locked from `03_architecture.md`. Listing them here so this doc stands
 | Background work | Celery + Redis | Mature, well-known operational shape; Hugo can debug it without learning a new mental model. |
 | Database | PostgreSQL 16 | Need rich JSONB for evidence + transactional guarantees for finding lifecycle. |
 | Migrations | Alembic | Standard with SQLAlchemy. |
-| Frontend | Next.js 14 (App Router) + Tailwind + shadcn/ui | Aligns with the Next.js + Vercel framework profile we ship first. |
+| Frontend | Next.js 15 (App Router) + React 19 + Tailwind + shadcn/ui | Aligns with the Next.js + Vercel framework profile we ship first. (Bumped from 14 in Phase 0 Week 1 — two unpatched HIGH advisories in the 14.x line: GHSA-h25m-26qc-wcjf, GHSA-q4gf-8mx6-v5v3.) |
 | Frontend pkg manager | pnpm | Disk-efficient and the workspace story is cleanest. |
 | DAST engine | OWASP ZAP (Stable) | Locked decision. |
 | Local dev | Docker Compose | Single command, no Kubernetes until revenue exists. |
@@ -206,12 +217,14 @@ In Phase 0 these zones are inside one Docker host. The exact same labels carry f
 | --- | --- | --- | --- | --- | --- |
 | `api` | built from `infra/docker/api.Dockerfile` | `8000` | `core` | default | FastAPI app. |
 | `worker` | built from `infra/docker/worker.Dockerfile` | — | `core`, `scan` | default | Celery worker, runs scan tasks. |
-| `postgres` | `postgres:16-alpine` | `5432` | `core` | default | App DB. |
-| `redis` | `redis:7-alpine` | `6379` | `core` | default | Celery broker + result backend. |
+| `postgres` | `postgres:16-alpine` | — (internal) | `core` | default | App DB. |
+| `redis` | `redis:7-alpine` | — (internal) | `core` | default | Celery broker + result backend. |
 | `zap` | `zaproxy/zap-stable` | `8090` (API), `8080` (proxy) | `scan`, `targets` | default | ZAP daemon mode, controlled via API. |
 | `juice-shop` | `bkimminich/juice-shop` | `3000` (only on `targets` net) | `targets` | `lab` | The first target. Behind the `lab` profile so prod-style runs don't bring it up. |
 | `mailpit` | `axllent/mailpit` | `1025` (SMTP), `8025` (UI) | `core` | `dev` | Catches outbound SMTP. |
 | `glitchtip` | `glitchtip/glitchtip` | `8001` | `core` | `obs` | Optional Sentry-compatible error tracker. |
+
+Postgres and Redis are not published to the host by default — they are reachable only inside the Docker networks (CLAUDE.md §17 and the Week-1 hardening note). To inspect locally, use `docker compose exec postgres psql …` / `docker compose exec redis redis-cli …`, or add a host port mapping in `docker-compose.override.yml`. The integration-test suite (`tests/integration/`) ships an overlay that publishes Postgres on `:55432` for the duration of the test run.
 
 Profiles let Hugo decide what's running:
 
@@ -438,7 +451,7 @@ Hugo is solo and has no deadline. This is a pacing guide, not a commitment. Cale
 | Week | Focus | Exit signal |
 | --- | --- | --- |
 | 1 | Monorepo scaffolding: pnpm workspace, Python workspaces via uv or rye, root tooling (.editorconfig, pre-commit, prettier, eslint, ruff, black, mypy configs). Compose with just postgres + redis + mailpit. FastAPI hello-world at `/health`. | `docker compose up` brings up the three services; `curl localhost:8000/health` returns 200. |
-| 2 | DB layer: SQLAlchemy models for `User`, `Project`, `Target`, `Scan`, `Finding`. First Alembic migration ("baseline"). Pydantic schemas. `seed.py`. Routes: `GET /projects`, `GET /scans`, `POST /scans` (returns 202 with no work yet). | A POST creates a queued scan row; GET returns it. |
+| 2 | DB layer: SQLAlchemy models for `Project`, `Scan`, `Finding` (in `packages/db`, not `apps/api`). First Alembic migration ("baseline"). Pydantic schemas. Celery worker with no-op `scan.run` task. Routes: `POST /scans` (202 + queue task), `GET /scans/{id}`. Integration test. + Next.js 15 / React 19 doc bump + ORM moved to packages/db. | A POST creates a queued scan row; the worker transitions it to completed; GET reflects the transition. |
 | 3 | Worker + ZAP: Celery worker, Compose entry for ZAP daemon, `scanners` package with abstract `ScannerPlugin`, `ZapPlugin` calling ZAP's REST API for a baseline scan, normalization to `Finding`. End-to-end against juice-shop. | A POST eventually returns findings via GET. |
 | 4 | Hardening + ergonomics: pre-commit hooks all green, GitHub Actions CI all green, observability (structlog, request IDs, correlation IDs), README quick-start that a stranger can follow, screenshots in `docs/`. Issue and PR templates. | A clean clone → quick-start works for someone who's never seen the repo. |
 

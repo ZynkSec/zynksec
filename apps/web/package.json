@@ -2,7 +2,7 @@
   "name": "@zynksec/web",
   "version": "0.0.0",
   "private": true,
-  "description": "Zynksec dashboard (Next.js 14 App Router) — placeholder until Week 2.",
+  "description": "Zynksec dashboard (Next.js 15 App Router) — placeholder until Phase 1.",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
