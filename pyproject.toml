@@ -1,0 +1,94 @@
+# Zynksec monorepo workspace root.
+# This file is NOT a deployable Python package; it carries workspace +
+# shared tooling config only. Real projects live in apps/* and packages/*.
+
+[project]
+name = "zynksec-workspace"
+version = "0.0.0"
+description = "Zynksec monorepo workspace root (tooling only)"
+readme = "README.md"
+requires-python = "==3.12.*"
+license = { text = "AGPL-3.0-or-later" }
+authors = [{ name = "Zynksec Maintainers" }]
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["apps/*", "packages/*"]
+# apps/web is a JavaScript / Next.js package; it lives in the pnpm
+# workspace, not the Python one.  Exclude it from the uv glob so
+# `uv sync` doesn't look for a pyproject.toml there.
+exclude = ["apps/web"]
+
+[dependency-groups]
+dev = [
+  "ruff>=0.7,<0.8",
+  "black>=24,<25",
+  "mypy>=1.13,<2",
+]
+
+# ---------- Ruff (lint + import sort + formatter) ----------
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["apps", "packages"]
+extend-exclude = [
+  "alembic/versions",
+  ".venv",
+  "node_modules",
+  "dist",
+  "build",
+]
+
+[tool.ruff.lint]
+select = [
+  "E",   # pycodestyle errors
+  "W",   # pycodestyle warnings
+  "F",   # pyflakes
+  "I",   # isort
+  "UP",  # pyupgrade
+  "B",   # flake8-bugbear
+  "S",   # flake8-bandit (security — critical for a security tool)
+  "N",   # pep8-naming
+  "PT",  # flake8-pytest-style
+  "RET", # flake8-return
+  "SIM", # flake8-simplify
+]
+ignore = [
+  "E501", # line length handled by the formatter
+]
+
+[tool.ruff.lint.per-file-ignores]
+"**/tests/**" = ["S101"]              # assert is fine in tests
+"apps/*/alembic/**" = ["E", "F401"]   # Alembic migration templates are generated
+"scripts/**" = ["S603", "S607"]       # dev scripts may shell out
+
+[tool.ruff.format]
+line-ending = "lf"
+
+# ---------- Black (formatter fallback; ruff-format is preferred but we
+# keep black so CI's `black --check` can run per docs/04 §0.13). ----------
+[tool.black]
+line-length = 100
+target-version = ["py312"]
+
+# ---------- mypy (strict only on packages/shared-schema) ----------
+# CLAUDE.md §3 and §9 require strict typing on the schema package; app
+# code is lenient in Phase 0 and tightens in Phase 1.
+[tool.mypy]
+python_version = "3.12"
+files = ["packages/shared-schema/src"]
+strict = true
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_return_any = true
+no_implicit_reexport = true
+disallow_untyped_defs = true
+show_error_codes = true
+pretty = true
+
+[[tool.mypy.overrides]]
+module = ["zynksec_scanners.*", "zynksec_api.*", "zynksec_worker.*"]
+ignore_missing_imports = true

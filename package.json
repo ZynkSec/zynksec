@@ -1,0 +1,22 @@
+{
+  "name": "zynksec",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Zynksec — open-source DAST-first security platform",
+  "license": "AGPL-3.0-or-later",
+  "packageManager": "pnpm@10.33.2",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "eslint ."
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.15.0",
+    "eslint": "^9.15.0",
+    "globals": "^15.12.0",
+    "prettier": "^3.3.3"
+  }
+}

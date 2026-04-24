@@ -1,0 +1,25 @@
+# Copy to docker-compose.override.yml (gitignored) to customise your
+# local stack without touching the canonical docker-compose.yml.
+# Uncomment the stanzas you want.
+
+# services:
+#   # Hot-reload the API on source changes (rebuild-free iteration).
+#   api:
+#     command: ["uvicorn", "zynksec_api.main:app", "--host", "0.0.0.0",
+#               "--port", "8000", "--reload"]
+#     volumes:
+#       - ./apps/api/src:/app/apps/api/src:ro
+#       - ./packages/shared-schema/src:/app/packages/shared-schema/src:ro
+#       - ./packages/scanners/src:/app/packages/scanners/src:ro
+#
+#   # Publish Postgres on the host so `psql` works from outside Docker.
+#   # Not enabled by default — CLAUDE.md §17 keeps the DB off the host
+#   # port namespace in the canonical compose.
+#   postgres:
+#     ports:
+#       - "55432:5432"
+#
+#   # Publish Redis on the host (for `redis-cli` from outside Docker).
+#   redis:
+#     ports:
+#       - "6379:6379"

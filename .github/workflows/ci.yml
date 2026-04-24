@@ -1,0 +1,131 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-python:
+    name: lint-python (ruff + black)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv + Python
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "0.11.7"
+          python-version: "3.12.7"
+          enable-cache: true
+      - name: Resolve workspace
+        run: uv sync
+      - name: Ruff lint
+        run: uv run ruff check .
+      - name: Black --check
+        run: uv run black --check .
+
+  lint-js:
+    name: lint-js (prettier + eslint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: ".nvmrc"
+          cache: pnpm
+      - name: Install JS deps
+        run: pnpm install --frozen-lockfile
+      - name: Prettier --check
+        run: pnpm run format:check
+      - name: ESLint
+        run: pnpm run lint
+
+  secrets:
+    name: secrets (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+      - name: Install gitleaks CLI
+        env:
+          GITLEAKS_VERSION: "8.21.2"
+        run: |
+          set -euo pipefail
+          curl -sSLo /tmp/gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+          sudo mv /tmp/gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+      - name: Scan for secrets
+        run: |
+          gitleaks detect \
+            --source . \
+            --redact \
+            --verbose \
+            --exit-code 1 \
+            --no-banner
+
+  deps:
+    name: deps (trivy fs)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install trivy CLI
+        run: |
+          set -euo pipefail
+          # Install trivy from the official Aqua Security APT repository.
+          # This is the trivy-team-recommended install path for Debian/Ubuntu
+          # (https://trivy.dev/docs/getting-started/installation/) and avoids
+          # the GitHub-release-asset 404s we hit with both direct curl
+          # downloads and the contrib/install.sh installer.
+          #
+          # Trade-off: this installs whatever trivy version is current in the
+          # Aqua APT repo, not a pinned patch version. For a security scanner
+          # this is the right call — vuln signatures and matchers are updated
+          # frequently and pinning the binary defeats half the point.
+          sudo install -d /etc/apt/keyrings -m 0755
+          curl -fsSL https://aquasecurity.github.io/trivy-repo/deb/public.key \
+            | sudo gpg --dearmor -o /etc/apt/keyrings/trivy.gpg
+          echo "deb [signed-by=/etc/apt/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" \
+            | sudo tee /etc/apt/sources.list.d/trivy.list > /dev/null
+          sudo apt-get update -qq
+          sudo apt-get install -y trivy
+          trivy --version
+      - name: Trivy filesystem scan
+        run: |
+          set -euo pipefail
+          trivy fs \
+            --severity HIGH,CRITICAL \
+            --ignore-unfixed \
+            --exit-code 1 \
+            --format table \
+            .
+
+  build-images:
+    name: build-images (api)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build API image (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/docker/api.Dockerfile
+          push: false
+          tags: zynksec/api:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

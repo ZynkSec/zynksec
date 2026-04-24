@@ -1,0 +1,80 @@
+name: zynksec
+
+# Phase 0 Week 1 scope: postgres, redis, api.  Worker / ZAP / targets /
+# mailpit / glitchtip land in later weeks per docs/04 §0.7.  All three
+# network zones are declared now (docs/04 §0.6) even though only
+# zynksec-core carries traffic this week — keeps the topology stable
+# as services arrive.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: zynksec-postgres
+    restart: unless-stopped
+    env_file:
+      - .env
+    # Postgres is intentionally NOT published to the host — only the
+    # api container needs it, and keeping it off the host port namespace
+    # (a) closes a minor attack surface (CLAUDE.md §17) and (b) avoids
+    # colliding with any locally-installed psql.  Uncomment a mapping
+    # in docker-compose.override.yml if you want `psql` from the host.
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./infra/compose/postgres-init.sql:/docker-entrypoint-initdb.d/10-init.sql:ro
+    networks:
+      - zynksec-core
+    healthcheck:
+      # `$$` escapes the compose interpolation so the shell inside the
+      # container sees the env vars set by env_file.
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: zynksec-redis
+    restart: unless-stopped
+    # Redis is intentionally NOT published to the host for the same
+    # reasoning as postgres above (CLAUDE.md §17).  The api + future
+    # worker reach it over the zynksec-core docker network.
+    networks:
+      - zynksec-core
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: infra/docker/api.Dockerfile
+    image: zynksec/api:dev
+    container_name: zynksec-api
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - zynksec-core
+
+networks:
+  zynksec-core:
+    name: zynksec-core
+  zynksec-scan:
+    name: zynksec-scan
+  zynksec-targets:
+    name: zynksec-targets
+    # No bridge to host or internet — docs/04 §0.6 + §0.19 risk table.
+    internal: true
+
+volumes:
+  postgres-data:
+    name: zynksec-postgres-data

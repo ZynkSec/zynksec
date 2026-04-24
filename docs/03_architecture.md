@@ -1024,4 +1024,3 @@ The scoping doc's phases correspond to specific architecture deliverables:
 | 5 | Community rule packs, API keys, RBAC expansion, beta onboarding tooling. |
 | 6 | AI amplification layer (local Mistral/Qwen3), contextual remediation notes, semantic dedupe pass. |
 | 7 | Kubernetes migration, SSO, compliance mappings, runtime protection as a separate product. |
-
