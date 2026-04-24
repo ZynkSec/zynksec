@@ -30,6 +30,9 @@ dev = [
   "pydantic>=2.9,<3",
   # Integration-test harness (CLAUDE.md §7 — real services, no mocks).
   "pytest>=8.3,<9",
+  # pytest-timeout gives each test a wall-clock ceiling so a hung ZAP
+  # scan can't eat the whole CI job timeout.
+  "pytest-timeout>=2.3,<3",
   "httpx>=0.27,<0.29",
   "sqlalchemy>=2.0,<3",
   # Tests import ORM models from zynksec-db to run SQLAlchemy queries
