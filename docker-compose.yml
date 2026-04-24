@@ -94,6 +94,30 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    # Cap ZAP's container memory.  Without this, ZAP under load could
+    # grow past the Docker Desktop VM's 8.2 GiB ceiling and be killed
+    # by the host kernel's global OOM killer (constraint=CONSTRAINT_
+    # NONE in dmesg).  Because that kill is global-VM rather than
+    # cgroup-scoped, Docker surfaces it as a clean bash exit
+    # (ExitCode=0, OOMKilled=false), making the failure mode invisible.
+    #
+    # 2 GiB is sized for the PASSIVE scan profile (spider + passive
+    # analyzers, no fuzzing).  Active-scan profiles, once added, will
+    # need either substantially more cgroup headroom or scanner-thread
+    # tuning (scanner.threadPerHost=1, custom policies excluding heavy
+    # rule sets like SQL injection) — that's Phase 1+ scope.
+    #
+    # Note: zaproxy/zap-stable runs bash as PID 1 with java as a child,
+    # so cgroup OOMs of the JVM do NOT set docker inspect's OOMKilled
+    # flag (it tracks PID 1 only).  Use `dmesg | grep CONSTRAINT_MEMCG`
+    # or worker-side ConnectError + RestartCount increments as the
+    # diagnostic signal.  zap.sh pins -Xmx1959m on the command line
+    # regardless of cgroup limit (and overrides _JAVA_OPTIONS), so don't
+    # waste time tuning JAVA env vars — if a future profile needs a
+    # different heap, override compose `command:` with a pinned image
+    # digest.
+    mem_limit: 2g
+    memswap_limit: 2g
     # ZAP is NOT host-published.  Only the worker reaches the ZAP
     # JSON API on :8090 via zynksec-scan; ZAP reaches targets via
     # zynksec-targets (docs/04 §0.6 + CLAUDE.md §17).
