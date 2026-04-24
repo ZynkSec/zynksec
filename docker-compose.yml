@@ -1,9 +1,10 @@
 name: zynksec
 
-# Phase 0 Week 2: postgres, redis, api, worker (default) + mailpit (dev).
-# ZAP / juice-shop / glitchtip still land in later weeks per docs/04 §0.7.
-# All three network zones are declared so the topology stays stable as
-# services arrive (docs/04 §0.6).
+# Phase 0 Week 3: adds zap (default) on zynksec-scan + zynksec-targets.
+# juice-shop lives in target-lab/compose-targets.yml so targets are
+# opt-in via `-f target-lab/compose-targets.yml --profile lab`.
+# glitchtip still lands in Week 4 per docs/04 §0.7.  All three network
+# zones are declared here (docs/04 §0.6).
 
 services:
   postgres:
@@ -78,12 +79,48 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    # Worker bridges core (Celery broker + Postgres) and scan (ZAP
-    # lands Week 3) networks.  It must never touch zynksec-targets
-    # directly — docs/04 §0.6 + CLAUDE.md §5.
+    # Worker bridges core (Celery broker + Postgres) and scan (ZAP).
+    # It MUST NOT touch zynksec-targets directly — docs/04 §0.6 +
+    # CLAUDE.md §5.  Verify isolation:
+    #   docker compose exec worker getent hosts juice-shop
+    # should return no output (worker shares no network with juice-shop).
     networks:
       - zynksec-core
       - zynksec-scan
+
+  zap:
+    image: zaproxy/zap-stable:latest
+    container_name: zynksec-zap
+    restart: unless-stopped
+    env_file:
+      - .env
+    # ZAP is NOT host-published.  Only the worker reaches the ZAP
+    # JSON API on :8090 via zynksec-scan; ZAP reaches targets via
+    # zynksec-targets (docs/04 §0.6 + CLAUDE.md §17).
+    command:
+      - zap.sh
+      - -daemon
+      - -host
+      - 0.0.0.0
+      - -port
+      - "8090"
+      - -config
+      - api.addrs.addr.name=.*
+      - -config
+      - api.addrs.addr.regex=true
+      - -config
+      - api.key=${ZAP_API_KEY}
+    networks:
+      - zynksec-scan
+      - zynksec-targets
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - 'curl -fsS "http://localhost:8090/JSON/core/view/version/?apikey=$$ZAP_API_KEY" >/dev/null'
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 60s
 
   mailpit:
     image: axllent/mailpit:latest

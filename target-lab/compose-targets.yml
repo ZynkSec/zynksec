@@ -1,0 +1,46 @@
+# Phase 0 target lab — intentionally vulnerable apps.
+#
+# Use only as an overlay on top of the canonical stack, behind the
+# `lab` Compose profile:
+#
+#   docker compose \
+#     -f docker-compose.yml \
+#     -f target-lab/compose-targets.yml \
+#     --profile lab \
+#     up -d
+#
+# These images carry REAL vulnerabilities.  Keep them on
+# zynksec-targets (internal: true) — never publish to the host, never
+# expose on the internet.  docs/04 §0.17 / §0.19 risk table.
+
+services:
+  juice-shop:
+    image: bkimminich/juice-shop:latest
+    container_name: zynksec-juice-shop
+    restart: unless-stopped
+    profiles:
+      - lab
+    # ONLY on zynksec-targets — no host ports, no egress.
+    # ZAP reaches juice-shop over this network; worker + api cannot
+    # because they don't share zynksec-targets.
+    networks:
+      - zynksec-targets
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - --spider
+        - --quiet
+        - --tries=1
+        - http://localhost:3000
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 30s
+
+networks:
+  # Declared as external so this file makes sense standalone; when
+  # merged via `-f docker-compose.yml -f target-lab/...` Compose
+  # uses the definition from docker-compose.yml.
+  zynksec-targets:
+    external: true
