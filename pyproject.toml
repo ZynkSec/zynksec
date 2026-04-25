@@ -29,7 +29,7 @@ dev = [
   # Pydantic-aware mypy — `plugins = ["pydantic.mypy"]` in [tool.mypy].
   "pydantic>=2.9,<3",
   # Integration-test harness (CLAUDE.md §7 — real services, no mocks).
-  "pytest>=8.3,<9",
+  "pytest>=9.0.3,<10",
   # pytest-timeout gives each test a wall-clock ceiling so a hung ZAP
   # scan can't eat the whole CI job timeout.
   "pytest-timeout>=2.3,<3",
