@@ -7,7 +7,7 @@ requires-python = "==3.12.*"
 license = { text = "AGPL-3.0-or-later" }
 authors = [{ name = "Zynksec Maintainers" }]
 dependencies = [
-  "fastapi>=0.116,<0.117",
+  "fastapi>=0.116,<0.118",
   "pydantic>=2.9,<3",
   "pydantic-settings>=2.6,<3",
   "uvicorn[standard]>=0.32,<0.33",
