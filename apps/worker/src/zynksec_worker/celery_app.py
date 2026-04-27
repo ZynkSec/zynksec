@@ -40,6 +40,15 @@ celery_app.conf.update(
     task_default_queue="scans",
     worker_hijack_root_logger=False,
     broker_connection_retry_on_startup=True,
+    # ZAP is a single-instance daemon — its session, alerts list, and
+    # spider state are global, so two scans running concurrently
+    # against the same daemon stomp on each other's ``newSession``
+    # calls (one returns HTTP 500 internal_error; the other gets a
+    # ``does_not_exist`` 400 on a vanished spider id).  Pin the
+    # worker pool to a single task at a time so the scan-runtime
+    # contract matches the ZAP-runtime contract.  Multi-instance
+    # ZAP fan-out (one daemon per worker) is Phase 2+ scope.
+    worker_concurrency=1,
 )
 
 # Discover tasks in zynksec_worker.tasks.

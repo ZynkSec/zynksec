@@ -36,6 +36,14 @@ _RETRY_EXCEPTIONS: tuple[type[Exception], ...] = (
     httpx.RemoteProtocolError,
 )
 
+# new_session has its own retry policy because ZAP can return a
+# transient HTTP 500 on session reset right after a heavy
+# AGGRESSIVE scan (mid-GC + session DB I/O contention).  3 attempts
+# with 2s/4s backoff is enough for the JVM to settle without
+# masking real failures.
+_NEW_SESSION_MAX_ATTEMPTS = 3
+_NEW_SESSION_BACKOFF_S = 2.0
+
 
 class ZapError(RuntimeError):
     """Raised when ZAP returns an error payload or an HTTP 4xx/5xx."""
@@ -172,13 +180,44 @@ class ZapClient:
     def new_session(self) -> None:
         """Reset the ZAP session — discards alerts, history, sites tree.
 
-        SAFE_ACTIVE compares finding counts against a baseline PASSIVE
-        scan, so each scan must start from a clean slate; otherwise the
-        second scan inherits alerts the first one accumulated.
-        ``overwrite=true`` drops the in-memory session without writing
-        a session file (we don't persist sessions in Phase 0).
+        SAFE_ACTIVE/AGGRESSIVE compare finding counts against a
+        baseline scan, so each scan must start from a clean slate;
+        otherwise the second scan inherits alerts the first one
+        accumulated.  ``overwrite=true`` drops the in-memory session
+        without writing a session file (we don't persist sessions in
+        Phase 0).
+
+        Wrapped in an explicit retry: ZAP's ``newSession`` action does
+        synchronous file I/O on the session DB, and immediately after
+        an AGGRESSIVE scan releases its references the JVM can be
+        mid-GC long enough for ZAP to return ``HTTP 500
+        internal_error`` for a few seconds.  The transport-layer retry
+        in :meth:`_request_with_retry` doesn't cover HTTP 500s
+        (deterministic upstream errors normally shouldn't be retried);
+        ``newSession`` is the one well-known exception, so we retry it
+        explicitly here rather than weakening the global retry policy.
         """
-        self._get("/JSON/core/action/newSession/", overwrite="true")
+        last_exc: ZapError | None = None
+        for attempt in range(1, _NEW_SESSION_MAX_ATTEMPTS + 1):
+            try:
+                self._get("/JSON/core/action/newSession/", overwrite="true")
+                return
+            except ZapError as exc:
+                last_exc = exc
+                if attempt >= _NEW_SESSION_MAX_ATTEMPTS:
+                    break
+                _log.warning(
+                    "zap_new_session_retry",
+                    attempt=attempt,
+                    max_attempts=_NEW_SESSION_MAX_ATTEMPTS,
+                    error=str(exc),
+                )
+                time.sleep(_NEW_SESSION_BACKOFF_S * (2 ** (attempt - 1)))
+        # last_exc is always set when we exit the loop (we only break
+        # after raising, attempt 1 sets it before the first sleep).
+        if last_exc is None:  # defensive — the loop guarantees this
+            raise ZapError("ZAP newSession exhausted retries with no recorded error")
+        raise last_exc
 
     # ---- active scan: policy management ----
     def ascan_scan_policy_names(self) -> list[str]:

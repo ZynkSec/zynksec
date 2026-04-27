@@ -111,3 +111,14 @@ pretty = true
 [[tool.mypy.overrides]]
 module = ["zynksec_scanners.*", "zynksec_api.*", "zynksec_worker.*"]
 ignore_missing_imports = true
+
+# ---------- pytest ----------
+# Marker registration so opt-in tests don't trip
+# ``PytestUnknownMarkWarning``.  The ``aggressive`` marker plus the
+# ``RUN_AGGRESSIVE_TESTS=1`` env-var skip together gate the long-
+# running AGGRESSIVE integration test from default ``pytest`` runs
+# (it takes 5-15 min and wants 5 GiB of free host RAM).
+[tool.pytest.ini_options]
+markers = [
+  "aggressive: opt-in AGGRESSIVE scan test (set RUN_AGGRESSIVE_TESTS=1, requires 5 GiB free RAM, ~5-15 min)",
+]

@@ -28,6 +28,15 @@ Zynksec is the tool a solo founder, a small team, or a security-curious develope
 
 ## Quick start
 
+### Prerequisites
+
+- Docker Desktop (or any Compose-capable runtime), with **6 GiB of
+  free RAM available to the ZAP container** (the AGGRESSIVE profile
+  asks for it, and the cgroup is shared across all profiles). Default
+  Docker Desktop allocates 4-8 GiB to its VM; check via
+  `docker system info | grep -i memory`.
+- `uv` for Python work, `pnpm` for the Next.js workspace.
+
 Zynksec runs locally via Docker Compose. Three named startup modes
 cover the common workflows:
 
@@ -83,9 +92,22 @@ Available profiles:
   fires injection payloads. Phase 1 Sprint 4 will add ownership
   verification (DNS TXT / well-known file) so this is enforced at the
   API layer rather than left to the operator.
-- **`AGGRESSIVE`** — reserved on the OpenAPI spec; the API still
-  returns `422 scan_profile_not_implemented` pointing at Phase 1
-  Sprint 3.
+- **`AGGRESSIVE`** _(Phase 1 Sprint 3)_ — every ZAP active scanner
+  enabled at HIGH attack strength + LOW alert threshold + 4 threads
+  per host with no politeness delay (the `zynksec_aggressive`
+  policy). 5-15 min typical on a single juice-shop subpath; 30+ min
+  on a full app. **Use only against dedicated test environments you
+  fully own** — never staging-shared, never production, never
+  anything someone else cares about. The profile pushes ZAP's JVM
+  heap to ~3 GiB and saturates the target's request handler.
+  Hardware: 6 GiB free RAM (cgroup is sized to 6 GiB; Xmx is 3500m,
+  ≈57% of cgroup, leaving ~2.5 GiB for non-heap JVM overhead;
+  see [`docs/architecture/zap-resource-tuning.md`](docs/architecture/zap-resource-tuning.md)
+  for the math). Run the AGGRESSIVE integration test locally with:
+
+  ```bash
+  RUN_AGGRESSIVE_TESTS=1 uv run pytest tests/integration/test_aggressive_scan.py -v
+  ```
 
 Scan duration scales with the target's parameter surface. A small
 subpath (e.g. `/rest/products/search?q=apple`) finishes in minutes;
