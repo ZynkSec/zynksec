@@ -22,10 +22,12 @@ from zynksec_api.db import get_session
 from zynksec_api.exceptions import ScanNotFound, ScanProfileNotImplemented
 from zynksec_api.schemas import ScanCreate, ScanRead, finding_from_row
 
-# Phase 1 Sprint 1 ships ``PASSIVE`` only.  Other profiles are valid in
-# the OpenAPI spec but rejected at runtime so users see a clear error
-# instead of a Celery task failure.
-_IMPLEMENTED_SCAN_PROFILES: frozenset[ScanProfile] = frozenset({ScanProfile.PASSIVE})
+# Phase 1 Sprint 2 adds ``SAFE_ACTIVE``.  ``AGGRESSIVE`` is still valid
+# in the OpenAPI spec but rejected at runtime so users see a clear
+# error instead of a Celery task failure.
+_IMPLEMENTED_SCAN_PROFILES: frozenset[ScanProfile] = frozenset(
+    {ScanProfile.PASSIVE, ScanProfile.SAFE_ACTIVE}
+)
 
 router = APIRouter(prefix="/api/v1/scans", tags=["scans"])
 
@@ -109,7 +111,8 @@ def create_scan(
     if body.scan_profile not in _IMPLEMENTED_SCAN_PROFILES:
         raise ScanProfileNotImplemented(
             f"scan_profile {body.scan_profile.value!r} is accepted by the schema but "
-            "not yet implemented. Tracking in Phase 1 Sprint 2. Use 'PASSIVE' for now."
+            "not yet implemented. Tracking in Phase 1 Sprint 3. Use 'PASSIVE' or "
+            "'SAFE_ACTIVE' for now."
         )
 
     project = _resolve_project(session, body.project_id)

@@ -1,20 +1,17 @@
-"""scan_profile request validation — Phase 1 Sprint 1.
+"""scan_profile request validation — Phase 1 Sprint 2.
 
-Asserts the API surface around the new ``scan_profile`` field:
+Asserts the API surface around the ``scan_profile`` field:
 
-    1. Pydantic accepts every :class:`ScanProfile` value but rejects
-       arbitrary strings with the standard 422.
-    2. The router returns a descriptive 422
-       (``scan_profile_not_implemented``) for ``SAFE_ACTIVE`` and
-       ``AGGRESSIVE`` so users don't hit a Celery
-       :class:`NotImplementedError` downstream.
+    1. ``SAFE_ACTIVE`` is now accepted (202) — was a descriptive 422
+       in Sprint 1.  The full SAFE_ACTIVE→worker→ZAP→findings flow is
+       covered by ``test_safe_active_scan.py`` (long-running).
+    2. ``AGGRESSIVE`` still returns the descriptive
+       ``scan_profile_not_implemented`` 422; the roadmap pointer in the
+       message now names Sprint 3.
+    3. Pydantic rejects arbitrary strings with FastAPI's default 422.
 
-The happy-path that *runs* a scan with ``scan_profile=PASSIVE`` lives
-in ``test_scans_roundtrip.py`` (real worker pickup) — duplicating the
-poll-until-running here would just cost time without adding signal.
-
-No mocks (CLAUDE.md §7) — these tests still need a live API process,
-which the session-scoped compose fixture in ``conftest.py`` provides.
+No mocks (CLAUDE.md §7) — these tests need a live API process, which
+the session-scoped compose fixture in ``conftest.py`` provides.
 """
 
 from __future__ import annotations
@@ -22,11 +19,12 @@ from __future__ import annotations
 import httpx
 
 
-def test_post_scan_with_safe_active_returns_descriptive_422(
+def test_post_scan_with_safe_active_is_accepted(
     api_client: httpx.Client,
 ) -> None:
-    """SAFE_ACTIVE is reserved but not implemented — 422 with the
-    ``scan_profile_not_implemented`` code, message names the profile."""
+    """SAFE_ACTIVE is implemented from Sprint 2 — 202 with the field
+    echoed in the response body.  The full active-scan run lives in
+    ``test_safe_active_scan.py`` so this test stays cheap."""
     response = api_client.post(
         "/api/v1/scans",
         json={
@@ -34,23 +32,17 @@ def test_post_scan_with_safe_active_returns_descriptive_422(
             "scan_profile": "SAFE_ACTIVE",
         },
     )
-    assert response.status_code == 422, response.text
+    assert response.status_code == 202, response.text
     body = response.json()
-    assert body["code"] == "scan_profile_not_implemented"
-    assert "SAFE_ACTIVE" in body["message"]
-    assert "not yet implemented" in body["message"]
-    # Roadmap pointer is part of the contract — a future copy-edit
-    # that drops it would erase the user's "what next" signal.
-    assert "Sprint 2" in body["message"]
-    # Canonical {code, message, request_id} envelope (CLAUDE.md §4) —
-    # request_id must carry the correlation_id, not just be shaped like it.
-    assert body["request_id"]
+    assert body["scan_profile"] == "SAFE_ACTIVE"
+    assert body["status"] == "queued"
 
 
 def test_post_scan_with_aggressive_returns_descriptive_422(
     api_client: httpx.Client,
 ) -> None:
-    """AGGRESSIVE is reserved but not implemented — same shape as SAFE_ACTIVE."""
+    """AGGRESSIVE is reserved but not implemented — descriptive 422
+    pointing at Phase 1 Sprint 3."""
     response = api_client.post(
         "/api/v1/scans",
         json={
@@ -62,7 +54,12 @@ def test_post_scan_with_aggressive_returns_descriptive_422(
     body = response.json()
     assert body["code"] == "scan_profile_not_implemented"
     assert "AGGRESSIVE" in body["message"]
-    assert "Sprint 2" in body["message"]
+    assert "not yet implemented" in body["message"]
+    # Roadmap pointer is part of the contract — a future copy-edit
+    # that drops it would erase the user's "what next" signal.
+    assert "Sprint 3" in body["message"]
+    # Canonical {code, message, request_id} envelope (CLAUDE.md §4) —
+    # request_id must carry the correlation_id, not just be shaped like it.
     assert body["request_id"]
 
 
