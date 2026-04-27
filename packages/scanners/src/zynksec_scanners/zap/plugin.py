@@ -1,18 +1,27 @@
-"""OWASP ZAP plugin — the one concrete :class:`ScannerPlugin` in Phase 0.
+"""OWASP ZAP plugin — Zynksec's concrete :class:`ScannerPlugin`.
 
-Phase 0 ships the PASSIVE scan profile only:
+Profile flow:
 
-    1. spider                          — quick crawl, bounded
-    2. passive-scan queue drain        — pscan/view/recordsToScan → 0
-    3. alerts view                     — fetch everything ZAP noticed
+    PASSIVE
+        1. spider                          — quick crawl, bounded
+        2. passive-scan queue drain        — pscan/view/recordsToScan → 0
+        3. alerts view                     — fetch everything ZAP noticed
 
-Active-scan profiles (``SAFE_ACTIVE``, ``AGGRESSIVE``) are declared on
-:class:`zynksec_schema.ScanProfile` but not implemented here;
-they raise :class:`NotImplementedError` until Glitchtip + structlog
-correlation give us the observability to diagnose scan-side failures
-live.  The decision is memorialised in the Week-3 post-mortem — active
-scanning has unbounded off-heap growth on parameter-rich targets and
-we exhausted the cgroup-tuning lever across four iterations.
+    SAFE_ACTIVE  (Phase 1 Sprint 2)
+        1. spider                          — same as PASSIVE
+        2. passive-scan drain
+        3. apply the constrained "zynksec_safe" scan policy
+        4. active scan against the spidered URLs
+        5. passive-scan drain (active probes generate new responses)
+        6. alerts view
+
+    AGGRESSIVE  — still :class:`NotImplementedError` (Phase 1 Sprint 3).
+
+The SAFE_ACTIVE policy is documented one constant down: it caps the
+attack/alert strength at ``MEDIUM``, pins ``threadPerHost = 1`` and a
+small per-request delay so we are a polite scanner, and disables
+heavy/slow scanner categories that don't earn their wall-clock cost on
+modern web targets (see :data:`SAFE_ACTIVE_DISABLED_SCANNERS`).
 
 Each alert becomes zero-or-one Findings via :meth:`normalize`.  CLAUDE.md §5:
 only :class:`ZapClient` speaks HTTP to :8090 — this plugin is pure
@@ -53,6 +62,103 @@ from zynksec_scanners.zap.owasp_mapping import owasp_for_cwe
 from zynksec_scanners.zap.payload_families import family_for
 
 _log = structlog.get_logger(__name__)
+
+# ---------- SAFE_ACTIVE policy ----------
+# This constant block IS the document-of-record for what "SAFE_ACTIVE"
+# means.  Anything that changes scanner-set behaviour belongs here, not
+# scattered in the run() method, so the policy is greppable and
+# reviewable in one place.
+
+#: ZAP scan-policy name used for SAFE_ACTIVE.  Recreated each scan
+#: (remove → add → configure) so the policy is deterministic regardless
+#: of any state left over from a previous daemon session.
+SAFE_ACTIVE_POLICY_NAME: str = "zynksec_safe"
+
+#: Per-policy attack strength.  ZAP's options are LOW/MEDIUM/HIGH/INSANE.
+#: MEDIUM keeps coverage close to the default while skipping the
+#: combinatorial payload sets that HIGH/INSANE add — those mostly find
+#: false-positives on modern frameworks while burning hours of budget.
+SAFE_ACTIVE_ATTACK_STRENGTH: str = "MEDIUM"
+
+#: Per-policy alert threshold.  MEDIUM means ZAP only raises an alert
+#: when the rule is at least medium-confidence the target is vulnerable;
+#: LOW would flood the user with noise that doesn't survive triage.
+SAFE_ACTIVE_ALERT_THRESHOLD: str = "MEDIUM"
+
+#: Single thread per target host so we don't overload juice-shop or
+#: a real customer staging environment.  ZAP defaults to 2-5 depending
+#: on CPU count.
+SAFE_ACTIVE_THREAD_PER_HOST: int = 1
+
+#: Per-request delay in milliseconds.  100 ms is the politeness knob —
+#: enough to keep an under-provisioned target alive without elongating
+#: a juice-shop scan past the 15-minute test budget.
+SAFE_ACTIVE_DELAY_MS: int = 100
+
+#: Active-scanner plugin IDs to disable for SAFE_ACTIVE.  Each entry is
+#: documented inline so a future maintainer (or a Sprint-3 reviewer)
+#: knows WHY it's off, not just THAT it's off.
+#:
+#: The trade-off pattern: time-based variants of common injection
+#: families (SQLi DB-specific, XPath, XSLT, command injection) and
+#: classic fuzz-bombs (XXE, SSTI, buffer overflow, format string,
+#: CVE-2012-1823) cost minutes of wall-clock per target and rarely add
+#: signal that boolean/error-based variants miss on modern stacks.
+#: Heartbleed (TLS-only) is irrelevant for plain-HTTP targets and never
+#: triggers in our lab anyway.
+#:
+#: Boolean/error-based SQLi (40018) is KEPT — it's fast and high-signal.
+#: XSS family (40012-40017), CRLF (40003), SSI (40009), session
+#: fixation (40013), path traversal (6), and remote file inclusion (7)
+#: are also kept.
+#:
+#: IDs verified against ZAP 2.16.x release-quality scanner set.  When a
+#: ZAP upgrade introduces or renumbers a heavy scanner, add it here
+#: with a one-line reason — that's the policy edit.
+SAFE_ACTIVE_DISABLED_SCANNERS: frozenset[int] = frozenset(
+    {
+        # SQL Injection — DB-specific time-based variants.  Each one
+        # repeats the full payload set against ALL parameters and waits
+        # for the configured timeout.  We keep 40018 (boolean/error)
+        # which catches the same vulns 10× faster.
+        40019,  # SQL Injection - MySQL (time-based)
+        40020,  # SQL Injection - Hypersonic (time-based)
+        40021,  # SQL Injection - Oracle (time-based)
+        40022,  # SQL Injection - PostgreSQL (time-based)
+        40024,  # SQL Injection - SQLite (time-based)
+        40027,  # SQL Injection - MsSQL (time-based)
+        # Code/command-injection fuzzers.  90020 mixes time+non-time
+        # variants in one rule; we keep the parent on but the time
+        # logic gates itself off at MEDIUM attack strength (see
+        # SAFE_ACTIVE_ATTACK_STRENGTH).  90019 (Server Side Code Inj.)
+        # is a heavy generic fuzz-bomb across language runtimes.
+        90019,  # Server Side Code Injection (heavy generic fuzz)
+        # XML / XPath / XSLT — all incur slow XML parser bursts on the
+        # target and produce noisy false-positives on JSON-only APIs.
+        90017,  # XSLT Injection
+        90021,  # XPath Injection
+        90023,  # XML External Entity Attack (XXE)
+        # Server-Side Template Injection — fuzz-heavy, brittle on
+        # non-template targets.
+        90035,  # Server Side Template Injection
+        90036,  # Server Side Template Injection (Blind)
+        # Classic legacy fuzz-bombs.  Buffer overflow / format string
+        # detection in HTTP land is fishing in dry creeks; CVE-2012-1823
+        # only matters for ancient PHP-CGI deployments.
+        30001,  # Buffer Overflow
+        30002,  # Format String Error
+        20018,  # Remote Code Execution - CVE-2012-1823 (PHP-CGI)
+        # TLS-only — irrelevant for plain-HTTP target lab.
+        20015,  # Heartbleed
+    }
+)
+
+#: Active-scan ceiling.  juice-shop with the SAFE policy completes in
+#: ~5-8 minutes locally; 10 min gives us slack for slower CI runners
+#: without papering over a runaway scan.  When this trips, the policy
+#: above needs revisiting — not the ceiling.
+SAFE_ACTIVE_ASCAN_CEILING_S: float = 600.0
+
 
 _RISK_TO_LEVEL: dict[str, SeverityLevel] = {
     "high": "high",
