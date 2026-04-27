@@ -184,7 +184,10 @@ class ZapPlugin(ScannerPlugin):
     display_name = "OWASP ZAP"
     engine_version = "stable"
     supported_target_kinds: set[str] = {"web_app"}
-    supported_intensities: set[str] = {ScanProfile.PASSIVE.value}
+    supported_intensities: set[str] = {
+        ScanProfile.PASSIVE.value,
+        ScanProfile.SAFE_ACTIVE.value,
+    }
     required_capabilities: set[str] = set()
 
     # Phase-0 tuning.  Spider bounds keep the integration test under
@@ -209,6 +212,13 @@ class ZapPlugin(ScannerPlugin):
         # Reachability + version probe.  Raises ZapError if ZAP isn't
         # up; the worker catches and marks the scan failed.
         version = self._client.version()
+        # Reset the ZAP session so this scan doesn't inherit alerts /
+        # sites tree / history from a previous one.  Without this,
+        # ``alerts(baseurl)`` returns cumulative alerts across every
+        # scan ZAP has run since the daemon started — making the
+        # SAFE_ACTIVE > PASSIVE comparison dishonest, and breaking the
+        # invariant that each Zynksec scan is independent.
+        self._client.new_session()
         self._client.set_spider_max_duration_mins(self._SPIDER_MAX_DURATION_MIN)
         return ScanContext(
             target=target,
@@ -217,14 +227,37 @@ class ZapPlugin(ScannerPlugin):
 
     def run(self, context: ScanContext) -> RawScanResult:
         profile = context.target.scan_profile
-        if profile is not ScanProfile.PASSIVE:
-            raise NotImplementedError(
-                f"scan profile {profile.value!r} pending Week 4 observability"
-            )
-
         url = context.target.url
         _log.info("zap.run.start", url=url, profile=profile.value)
 
+        if profile is ScanProfile.PASSIVE:
+            self._spider_and_pscan_drain(url)
+        elif profile is ScanProfile.SAFE_ACTIVE:
+            self._spider_and_pscan_drain(url)
+            self._apply_safe_policy()
+            self._active_scan(url)
+            # Active probes generate fresh responses that the passive
+            # analyzers re-process; drain the queue once more before
+            # reading alerts so we don't miss late-arriving findings.
+            self._poll(
+                lambda: self._client.pscan_records_to_scan(),
+                ceiling_s=self._PSCAN_DRAIN_CEILING_S,
+                name="pscan_post_active",
+                reached=lambda remaining: remaining == 0,
+            )
+        else:
+            raise NotImplementedError(f"scan profile {profile.value!r} pending Phase 1 Sprint 3")
+
+        alerts = self._client.alerts(url)
+        _log.info("zap.run.complete", url=url, profile=profile.value, alerts=len(alerts))
+        return RawScanResult(
+            engine="zap",
+            payload={"alerts": alerts, "baseurl": url},
+        )
+
+    # ---- profile flows ----
+    def _spider_and_pscan_drain(self, url: str) -> None:
+        """Spider the URL and wait for the passive queue to drain."""
         spider_id = self._client.spider_scan(
             url,
             max_children=self._SPIDER_MAX_CHILDREN,
@@ -235,10 +268,9 @@ class ZapPlugin(ScannerPlugin):
             name="spider",
             reached=lambda status: status >= 100,
         )
-
-        # Wait for the passive-scan queue to drain.  ZAP's passive
-        # rules run asynchronously during the crawl, so "spider done"
-        # doesn't mean "alerts finalised"; we need recordsToScan == 0.
+        # ZAP's passive rules run asynchronously during the crawl, so
+        # "spider done" doesn't mean "alerts finalised"; we need
+        # recordsToScan == 0 before reading alerts.
         self._poll(
             lambda: self._client.pscan_records_to_scan(),
             ceiling_s=self._PSCAN_DRAIN_CEILING_S,
@@ -246,11 +278,47 @@ class ZapPlugin(ScannerPlugin):
             reached=lambda remaining: remaining == 0,
         )
 
-        alerts = self._client.alerts(url)
-        _log.info("zap.run.complete", url=url, alerts=len(alerts))
-        return RawScanResult(
-            engine="zap",
-            payload={"alerts": alerts, "baseurl": url},
+    def _apply_safe_policy(self) -> None:
+        """Recreate the SAFE_ACTIVE scan policy from scratch.
+
+        Idempotent: removes any pre-existing ``zynksec_safe`` policy
+        first (a no-op if it doesn't exist), then adds a fresh one with
+        the documented strength/threshold and disables the
+        :data:`SAFE_ACTIVE_DISABLED_SCANNERS` set.  The thread/delay
+        knobs are global daemon options — Phase 1 Sprint 2 has at most
+        one scan in flight at a time, so per-scan policy on those would
+        just be ceremony.
+        """
+        self._client.ascan_remove_scan_policy(SAFE_ACTIVE_POLICY_NAME)
+        self._client.ascan_add_scan_policy(
+            SAFE_ACTIVE_POLICY_NAME,
+            attack_strength=SAFE_ACTIVE_ATTACK_STRENGTH,
+            alert_threshold=SAFE_ACTIVE_ALERT_THRESHOLD,
+        )
+        self._client.ascan_disable_scanners(
+            sorted(SAFE_ACTIVE_DISABLED_SCANNERS),
+            scan_policy_name=SAFE_ACTIVE_POLICY_NAME,
+        )
+        self._client.ascan_set_option_thread_per_host(SAFE_ACTIVE_THREAD_PER_HOST)
+        self._client.ascan_set_option_delay_in_ms(SAFE_ACTIVE_DELAY_MS)
+        _log.info(
+            "zap.safe_policy.applied",
+            policy=SAFE_ACTIVE_POLICY_NAME,
+            attack_strength=SAFE_ACTIVE_ATTACK_STRENGTH,
+            alert_threshold=SAFE_ACTIVE_ALERT_THRESHOLD,
+            disabled_scanners=len(SAFE_ACTIVE_DISABLED_SCANNERS),
+            thread_per_host=SAFE_ACTIVE_THREAD_PER_HOST,
+            delay_ms=SAFE_ACTIVE_DELAY_MS,
+        )
+
+    def _active_scan(self, url: str) -> None:
+        """Run the SAFE active scan to completion."""
+        ascan_id = self._client.ascan_scan(url, scan_policy_name=SAFE_ACTIVE_POLICY_NAME)
+        self._poll(
+            lambda: self._client.ascan_status(ascan_id),
+            ceiling_s=SAFE_ACTIVE_ASCAN_CEILING_S,
+            name="ascan",
+            reached=lambda status: status >= 100,
         )
 
     def normalize(

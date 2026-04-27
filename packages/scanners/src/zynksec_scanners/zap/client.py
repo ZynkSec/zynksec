@@ -167,3 +167,97 @@ class ZapClient:
         if not isinstance(alerts_raw, list):
             return []
         return [a for a in alerts_raw if isinstance(a, dict)]
+
+    # ---- session reset ----
+    def new_session(self) -> None:
+        """Reset the ZAP session — discards alerts, history, sites tree.
+
+        SAFE_ACTIVE compares finding counts against a baseline PASSIVE
+        scan, so each scan must start from a clean slate; otherwise the
+        second scan inherits alerts the first one accumulated.
+        ``overwrite=true`` drops the in-memory session without writing
+        a session file (we don't persist sessions in Phase 0).
+        """
+        self._get("/JSON/core/action/newSession/", overwrite="true")
+
+    # ---- active scan: policy management ----
+    def ascan_scan_policy_names(self) -> list[str]:
+        """List currently-defined scan policies."""
+        payload = self._get("/JSON/ascan/view/scanPolicyNames/")
+        names_raw = payload.get("scanPolicyNames", [])
+        if not isinstance(names_raw, list):
+            return []
+        return [str(n) for n in names_raw]
+
+    def ascan_remove_scan_policy(self, name: str) -> None:
+        """Remove a scan policy.  No-op if it doesn't exist (idempotent)."""
+        if name not in self.ascan_scan_policy_names():
+            return
+        self._get("/JSON/ascan/action/removeScanPolicy/", scanPolicyName=name)
+
+    def ascan_add_scan_policy(
+        self,
+        name: str,
+        *,
+        attack_strength: str,
+        alert_threshold: str,
+    ) -> None:
+        """Add a scan policy at the given strength + threshold.
+
+        ZAP rejects duplicate policy names with ``already_exists``; the
+        plugin's ``_apply_safe_policy`` calls ``ascan_remove_scan_policy``
+        first to keep the operation idempotent.
+        """
+        self._get(
+            "/JSON/ascan/action/addScanPolicy/",
+            scanPolicyName=name,
+            attackStrength=attack_strength,
+            alertThreshold=alert_threshold,
+        )
+
+    def ascan_disable_scanners(self, ids: list[int], *, scan_policy_name: str) -> None:
+        """Disable scanners by id within a named policy.
+
+        Comma-separated id list — ZAP accepts a single batch call so the
+        policy reaches its final state in one round-trip rather than N.
+        """
+        if not ids:
+            return
+        self._get(
+            "/JSON/ascan/action/disableScanners/",
+            ids=",".join(str(i) for i in sorted(ids)),
+            scanPolicyName=scan_policy_name,
+        )
+
+    def ascan_set_option_thread_per_host(self, threads: int) -> None:
+        """Cap concurrent active-scan threads per target host (politeness)."""
+        self._get("/JSON/ascan/action/setOptionThreadPerHost/", Integer=str(threads))
+
+    def ascan_set_option_delay_in_ms(self, delay_ms: int) -> None:
+        """Insert ``delay_ms`` between active-scan requests (politeness)."""
+        self._get("/JSON/ascan/action/setOptionDelayInMs/", Integer=str(delay_ms))
+
+    # ---- active scan: lifecycle ----
+    def ascan_scan(self, url: str, *, scan_policy_name: str) -> str:
+        """Start an active scan against ``url`` with the named policy.
+
+        Returns ZAP's scan id (a string of digits) so the caller can poll
+        ``ascan_status``.  ``recurse=true`` re-uses what the spider
+        discovered; ``inScopeOnly=false`` because we don't define a
+        ZAP scope in Phase 1 — the target URL itself is the scope.
+        """
+        payload = self._get(
+            "/JSON/ascan/action/scan/",
+            url=url,
+            recurse="true",
+            inScopeOnly="false",
+            scanPolicyName=scan_policy_name,
+        )
+        return str(payload.get("scan", "")) or ""
+
+    def ascan_status(self, scan_id: str) -> int:
+        payload = self._get("/JSON/ascan/view/status/", scanId=scan_id)
+        try:
+            return int(payload.get("status", "0"))
+        except (TypeError, ValueError):
+            return 0
