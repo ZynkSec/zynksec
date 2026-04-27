@@ -39,6 +39,12 @@ def test_post_scan_with_safe_active_returns_descriptive_422(
     assert body["code"] == "scan_profile_not_implemented"
     assert "SAFE_ACTIVE" in body["message"]
     assert "not yet implemented" in body["message"]
+    # Roadmap pointer is part of the contract — a future copy-edit
+    # that drops it would erase the user's "what next" signal.
+    assert "Sprint 2" in body["message"]
+    # Canonical {code, message, request_id} envelope (CLAUDE.md §4) —
+    # request_id must carry the correlation_id, not just be shaped like it.
+    assert body["request_id"]
 
 
 def test_post_scan_with_aggressive_returns_descriptive_422(
@@ -56,6 +62,8 @@ def test_post_scan_with_aggressive_returns_descriptive_422(
     body = response.json()
     assert body["code"] == "scan_profile_not_implemented"
     assert "AGGRESSIVE" in body["message"]
+    assert "Sprint 2" in body["message"]
+    assert body["request_id"]
 
 
 def test_post_scan_with_invalid_profile_returns_pydantic_422(
