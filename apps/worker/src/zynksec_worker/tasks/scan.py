@@ -28,8 +28,8 @@ from zynksec_db import (
     engine_from_url,
     make_session_factory,
 )
-from zynksec_scanners import ScannerPlugin, ScanProfile, Target
-from zynksec_schema import Finding
+from zynksec_scanners import ScannerPlugin, Target
+from zynksec_schema import Finding, ScanProfile
 
 from zynksec_worker.celery_app import celery_app
 from zynksec_worker.config import get_settings
@@ -48,13 +48,16 @@ def _session_factory() -> sessionmaker[Session]:
     return make_session_factory(engine)
 
 
-def _load_target(factory: sessionmaker[Session], scan_uuid: uuid.UUID) -> Target:
+def _load_target(
+    factory: sessionmaker[Session],
+    scan_uuid: uuid.UUID,
+    scan_profile: ScanProfile,
+) -> Target:
     """Load the Scan row and construct a :class:`Target` for the plugin.
 
-    Phase 0 hardcodes ``scan_profile=ScanProfile.PASSIVE`` — the scans
-    table has no ``scan_profile`` column yet, and active-scan profiles
-    aren't implemented.  Week 4+ surfaces scan_profile on the API and
-    reads it here.
+    ``scan_profile`` is supplied by the caller (the Celery task entry
+    point, which converts the primitive task kwarg into the enum) so
+    this helper stays free of wire-format coupling.
     """
     with factory() as session:
         scan = session.get(Scan, scan_uuid)
@@ -65,7 +68,7 @@ def _load_target(factory: sessionmaker[Session], scan_uuid: uuid.UUID) -> Target
             url=scan.target_url,
             project_id=scan.project_id,
             scan_id=scan.id,
-            scan_profile=ScanProfile.PASSIVE,
+            scan_profile=scan_profile,
         )
 
 
@@ -119,23 +122,32 @@ def _mark(
 
 
 @celery_app.task(name="scan.run", bind=True)
-def run(self: Task, scan_id: str, correlation_id: str | None = None) -> None:
-    """Drive ZAP through the Phase-0 baseline flow against one target.
+def run(
+    self: Task,
+    scan_id: str,
+    scan_profile: str = ScanProfile.PASSIVE.value,
+    correlation_id: str | None = None,
+) -> None:
+    """Drive ZAP through the Sprint-1 baseline flow against one target.
 
-    ``correlation_id`` is a Week-4 observability kwarg consumed by
+    ``scan_profile`` arrives as a primitive (CLAUDE.md §5) — the wire
+    form of :class:`ScanProfile`, e.g. ``"PASSIVE"``.  The default
+    keeps task replays from older API versions safe.  ``correlation_id``
+    is a Week-4 observability kwarg consumed by
     :func:`zynksec_worker.celery_app._bind_task_context` via the
     ``task_prerun`` signal; this function treats it as a no-op body
     parameter so Celery's argument-binding accepts it.
     """
     del self, correlation_id
     scan_uuid = uuid.UUID(scan_id)
+    profile = ScanProfile(scan_profile)
     settings = get_settings()
     factory = _session_factory()
 
-    _log.info("scan.run.start", scan_id=scan_id)
+    _log.info("scan.run.start", scan_id=scan_id, scan_profile=profile.value)
     _mark(factory, "running", scan_uuid)
 
-    target = _load_target(factory, scan_uuid)
+    target = _load_target(factory, scan_uuid, profile)
     plugin: ScannerPlugin = build_zap_plugin(settings)
 
     if not plugin.supports(target):

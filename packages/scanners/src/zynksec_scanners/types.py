@@ -4,31 +4,31 @@ Frozen dataclasses so the worker and plugins can pass structured state
 around without needing Pydantic validation on every hop.  Real typed
 contracts (as opposed to the Week-1 ``Any`` placeholders in
 ``base.py``) live here.
+
+:class:`ScanProfile` lives in :mod:`zynksec_schema` (the single source
+of truth shared by the API request body, the worker task signature,
+and this plugin contract) and is re-exported here so existing imports
+``from zynksec_scanners import ScanProfile`` keep working.
 """
 
 from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from enum import StrEnum
 from typing import Any, Literal
+
+from zynksec_schema import ScanProfile
 
 TargetKind = Literal["web_app", "api", "repo"]
 
-
-class ScanProfile(StrEnum):
-    """How aggressively the engine probes the target.
-
-    Phase 0 ships ``PASSIVE`` only — spider + ZAP's passive analyzers.
-    Active-scan profiles are declared here so the contract is stable,
-    but their implementations raise :class:`NotImplementedError` until
-    we have Glitchtip + structlog correlation wired (Week 4) and the
-    API exposes ``scan_profile`` as a request parameter.
-    """
-
-    PASSIVE = "passive"
-    SAFE_ACTIVE = "safe_active"
-    AGGRESSIVE = "aggressive"
+__all__ = [
+    "HealthStatus",
+    "RawScanResult",
+    "ScanContext",
+    "ScanProfile",
+    "Target",
+    "TargetKind",
+]
 
 
 @dataclass(frozen=True)

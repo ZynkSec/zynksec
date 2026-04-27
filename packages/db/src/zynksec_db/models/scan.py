@@ -30,6 +30,16 @@ class Scan(Base):
         nullable=False,
     )
     target_url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    # Stored as a free-form short string rather than a Postgres ENUM so
+    # adding profiles in future sprints (Sprint 2: SAFE_ACTIVE,
+    # Sprint 3: AGGRESSIVE) doesn't need a Postgres ALTER TYPE — the
+    # canonical value-set lives on :class:`zynksec_schema.ScanProfile`.
+    scan_profile: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        server_default="PASSIVE",
+        default="PASSIVE",
+    )
     status: Mapped[str] = mapped_column(
         Enum(
             "queued",

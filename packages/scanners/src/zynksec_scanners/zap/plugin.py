@@ -7,7 +7,7 @@ Phase 0 ships the PASSIVE scan profile only:
     3. alerts view                     — fetch everything ZAP noticed
 
 Active-scan profiles (``SAFE_ACTIVE``, ``AGGRESSIVE``) are declared on
-:class:`zynksec_scanners.types.ScanProfile` but not implemented here;
+:class:`zynksec_schema.ScanProfile` but not implemented here;
 they raise :class:`NotImplementedError` until Glitchtip + structlog
 correlation give us the observability to diagnose scan-side failures
 live.  The decision is memorialised in the Week-3 post-mortem — active
