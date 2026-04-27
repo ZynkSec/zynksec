@@ -67,11 +67,27 @@ curl http://localhost:8000/api/v1/scans/3f16096a-8c1e-4721-b387-39652e9304bd
 ```
 
 The `scan_profile` field is optional and defaults to `PASSIVE`.
-`SAFE_ACTIVE` and `AGGRESSIVE` are reserved on the OpenAPI spec for
-clients planning ahead but the API rejects them with a descriptive
-`422 scan_profile_not_implemented` until their implementations land
-in upcoming Phase 1 sprints. Multi-target scanning is deferred to
-Phase 2.
+Available profiles:
+
+- **`PASSIVE`** — spider + passive analysis only. No requests beyond
+  what a normal browser would issue. ~15-30 s on juice-shop, ~327
+  findings on this lab. Safe against any target (no payload injection).
+- **`SAFE_ACTIVE`** _(Phase 1 Sprint 2)_ — spider + passive + a
+  constrained active scan with the `zynksec_safe` policy: attack
+  strength capped at MEDIUM, single thread per host, 100 ms per-request
+  delay, time-based SQLi/XPath/XSLT/SSTI/XXE/buffer-overflow scanners
+  disabled (full list in
+  [`SAFE_ACTIVE_DISABLED_SCANNERS`](packages/scanners/src/zynksec_scanners/zap/plugin.py)).
+  ~5-8 minutes on juice-shop. **Use only against staging/dev
+  environments or production targets you own** — the active scan still
+  fires injection payloads. Phase 1 Sprint 4 will add ownership
+  verification (DNS TXT / well-known file) so this is enforced at the
+  API layer rather than left to the operator.
+- **`AGGRESSIVE`** — reserved on the OpenAPI spec; the API still
+  returns `422 scan_profile_not_implemented` pointing at Phase 1
+  Sprint 3.
+
+Multi-target scanning is deferred to Phase 2.
 
 A complete scan response (trimmed to three of the 327 findings on
 this run) looks like:
