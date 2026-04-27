@@ -87,6 +87,14 @@ Available profiles:
   returns `422 scan_profile_not_implemented` pointing at Phase 1
   Sprint 3.
 
+Scan duration scales with the target's parameter surface. A small
+subpath (e.g. `/rest/products/search?q=apple`) finishes in minutes;
+a full app like OWASP Juice Shop can take 20+ minutes at MEDIUM
+strength. Plan accordingly when integrating into CI — the SAFE_ACTIVE
+integration test scans a single juice-shop subpath on purpose, and
+full-target verification is recommended as a manual pre-tag gate
+rather than a per-PR check.
+
 Multi-target scanning is deferred to Phase 2.
 
 A complete scan response (trimmed to three of the 327 findings on
