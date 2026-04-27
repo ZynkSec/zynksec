@@ -2,21 +2,38 @@
 
 OPT-IN: the AGGRESSIVE profile runs ZAP at HIGH attack strength + LOW
 alert threshold + every scanner enabled + 4 threads/host.  On a real
-target it can take 5-15 min and saturate ~3 GiB of JVM heap, so this
-test is gated behind ``RUN_AGGRESSIVE_TESTS=1`` and a cgroup-cap
-sanity check; default ``pytest`` runs SKIP it cleanly.
+target it can take 5-15 min and saturate the JVM heap, so this test
+is gated behind ``RUN_AGGRESSIVE_TESTS=1`` and a cgroup-cap sanity
+check; default ``pytest`` runs SKIP it cleanly.
 
 Two scans, same juice-shop subpath
-(``http://juice-shop:3000/rest/products/search?q=apple``):
+(``http://juice-shop:3000/rest/user/login``):
 
-    1. SAFE_ACTIVE — Sprint 2 baseline
+    1. SAFE_ACTIVE — Sprint 2's MEDIUM/MEDIUM constrained policy
     2. AGGRESSIVE  — every scanner on, HIGH/LOW
 
-Assertion: ``aggressive_count > safe_active_count``.  AGGRESSIVE
-finding NOT in SAFE_ACTIVE on this subpath is empirically the
-boolean/error-based SQLi family running at HIGH (more payload variants
-flush more error oracles), plus low-confidence findings the LOW alert
-threshold accepts that MEDIUM (SAFE_ACTIVE) suppresses.
+``/rest/user/login`` is juice-shop's canonical SQLi target — a POST
+endpoint with two body params (``email``, ``password``) that
+authenticate against a SQLite-backed users table.  Two params instead
+of one give AGGRESSIVE's HIGH-strength scanners more payload×param
+permutations than SAFE_ACTIVE's MEDIUM strength, which is what
+produces a measurable ``aggressive_count > safe_active_count`` delta.
+The Sprint-2 SAFE_ACTIVE test still uses
+``/rest/products/search?q=apple`` because that target is fast enough
+to be in CI's main path; this AGGRESSIVE-only test pays the extra
+seconds on a denser surface to keep the assertion honest.
+
+Two assertions:
+
+    1. ``aggressive_count > safe_active_count`` AND
+       ``aggressive_count > 0`` — the count delta proves AGGRESSIVE
+       finds something SAFE_ACTIVE doesn't.
+    2. The worker emitted ``zap.aggressive_policy.applied`` with
+       ``attack_strength=HIGH`` AND ``alert_threshold=LOW``.  Belt-
+       and-braces: even if the count delta were tied for some target-
+       level reason, the log line proves the AGGRESSIVE branch
+       actually executed (vs. silently falling through to SAFE_ACTIVE
+       on a config bug).
 
 CLAUDE.md §7 — real Postgres, real Redis, real ZAP, real juice-shop.
 No mocks.  ZAP's session is reset between scans
@@ -49,17 +66,59 @@ import pytest
 _POLL_BUDGET_S = 1680.0
 _POLL_INTERVAL_S = 5.0  # less aggressive than SAFE_ACTIVE — long scan
 
-# Same subpath Sprint 2 used so the SAFE_ACTIVE leg's behaviour is
-# the documented one and AGGRESSIVE's delta is apples-to-apples.
-_TARGET_URL = "http://juice-shop:3000/rest/products/search?q=apple"
+# juice-shop's canonical SQLi target — POST endpoint with multi-param
+# body surface.  See module docstring for the choice rationale.
+_TARGET_URL = "http://juice-shop:3000/rest/user/login"
 
 # Below this cgroup cap, AGGRESSIVE WILL OOM the JVM.  4 GiB is the
 # floor (3500m Xmx + ~500 MiB non-heap overhead); the documented
-# Sprint-3 setup is 5 GiB.
+# Sprint-3 setup is 6 GiB (Xmx ≈ 57 % of cgroup, leaves ~2.5 GiB
+# headroom for non-heap).
 _MIN_CGROUP_GIB = 4.0
 
 _MEM_RE = re.compile(r"(\d+\.?\d*)(MiB|GiB)")
 _OPT_IN_ENV = "RUN_AGGRESSIVE_TESTS"
+
+_REPO_ROOT: Path = Path(__file__).resolve().parents[2]
+
+
+def _compose(*args: str) -> list[str]:
+    """``docker compose`` invocation matching ``conftest.py``'s overlay
+    chain.  Used by :func:`_logs_since` to grep worker logs without
+    depending on the conftest helper directly."""
+    return [
+        "docker",
+        "compose",
+        "-f",
+        str(_REPO_ROOT / "docker-compose.yml"),
+        "-f",
+        str(_REPO_ROOT / "target-lab" / "compose-targets.yml"),
+        "-f",
+        str(_REPO_ROOT / "tests" / "integration" / "docker-compose.test.yml"),
+        "--profile",
+        "dev",
+        "--profile",
+        "lab",
+        *args,
+    ]
+
+
+def _logs_since(service: str, elapsed_s: float) -> str:
+    """Tail a compose service's logs going back ``elapsed_s`` seconds.
+
+    Mirrors the helper in ``test_correlation_id_propagation.py`` —
+    docker's ``--since`` is wall-clock so we add a 5 s cushion to
+    cover monotonic-vs-wall drift over a long AGGRESSIVE run.
+    """
+    window = max(1, int(elapsed_s) + 5)
+    result = subprocess.run(  # noqa: S603 — list-form, no user input
+        _compose("logs", "--no-color", f"--since={window}s", service),
+        cwd=str(_REPO_ROOT),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout + result.stderr
 
 
 class _ZapMemorySampler:
@@ -191,14 +250,13 @@ def test_post_scan_with_aggressive_finds_more_than_safe_active(
     api_client: httpx.Client,
 ) -> None:
     """AGGRESSIVE returns strictly more findings than SAFE_ACTIVE on
-    the same juice-shop subpath.  HIGH attack strength + LOW alert
-    threshold + every scanner enabled is supposed to be the noisiest
-    profile — equal counts would mean the policy didn't actually
-    differ from SAFE_ACTIVE in practice."""
+    juice-shop's ``/rest/user/login`` POST surface, AND the worker
+    logged the AGGRESSIVE policy-applied event with the documented
+    HIGH/LOW knobs."""
     if not os.environ.get(_OPT_IN_ENV):
         pytest.skip(
             f"AGGRESSIVE test is opt-in; set {_OPT_IN_ENV}=1 to run. "
-            "Requires 5 GiB free host RAM and may take 5-15 min."
+            "Requires 6 GiB free host RAM and may take 5-15 min."
         )
 
     cgroup_gib = _zap_cgroup_gib()
@@ -206,10 +264,11 @@ def test_post_scan_with_aggressive_finds_more_than_safe_active(
         pytest.skip(
             f"ZAP cgroup limit is {cgroup_gib:.1f} GiB; AGGRESSIVE needs "
             f">= {_MIN_CGROUP_GIB:.0f} GiB to avoid OOM.  Check docker-compose.yml"
-            " mem_limit (Sprint 3 sets it to 5g)."
+            " mem_limit (Sprint 3 sets it to 6g)."
         )
 
     sampler = _ZapMemorySampler()
+    test_start = time.monotonic()
     with sampler:
         # SAFE_ACTIVE seeds the baseline.  ZAP's session is reset at
         # the start of each scan, so AGGRESSIVE sees an independent
@@ -223,6 +282,34 @@ def test_post_scan_with_aggressive_finds_more_than_safe_active(
         aggressive_body = _poll_until_completed(api_client, aggressive_id)
         aggressive_findings = aggressive_body.get("findings", [])
         aggressive_count = len(aggressive_findings)
+    elapsed_s = time.monotonic() - test_start
+
+    # Plumbing assertion — independent of count delta.  Even if the
+    # count tied (which would mean the target's response surface is
+    # too narrow to differentiate HIGH vs MEDIUM strength), the log
+    # line proves the AGGRESSIVE branch in ZapPlugin.scan() actually
+    # executed.  A regression that silently falls through to
+    # SAFE_ACTIVE for AGGRESSIVE requests would fail this even with a
+    # passing count assertion.
+    worker_logs = _logs_since("worker", elapsed_s)
+    aggressive_policy_applied = [
+        line
+        for line in worker_logs.splitlines()
+        if '"event": "zap.aggressive_policy.applied"' in line
+        or '"event":"zap.aggressive_policy.applied"' in line
+    ]
+    assert aggressive_policy_applied, (
+        "no zap.aggressive_policy.applied log line in worker logs — the "
+        "AGGRESSIVE branch did not run, or the policy-apply step was "
+        f"silently skipped. Worker log tail:\n{worker_logs[-1500:]}"
+    )
+    policy_line = aggressive_policy_applied[-1]
+    assert (
+        '"attack_strength": "HIGH"' in policy_line or '"attack_strength":"HIGH"' in policy_line
+    ), f"AGGRESSIVE policy applied without attack_strength=HIGH: {policy_line}"
+    assert (
+        '"alert_threshold": "LOW"' in policy_line or '"alert_threshold":"LOW"' in policy_line
+    ), f"AGGRESSIVE policy applied without alert_threshold=LOW: {policy_line}"
 
     # Identify one finding only AGGRESSIVE caught — the active-only
     # delta is what the user paid for in wall-clock + RSS.
@@ -249,7 +336,8 @@ def test_post_scan_with_aggressive_finds_more_than_safe_active(
         f"aggressive_only_example={aggressive_only_summary}\n"
         f"zap_peak_rss_mib={sampler.peak_mib:.1f}\n"
         f"zap_peak_rss_gib={sampler.peak_mib / 1024:.2f}\n"
-        f"zap_cgroup_gib={cgroup_gib:.2f}\n",
+        f"zap_cgroup_gib={cgroup_gib:.2f}\n"
+        f"elapsed_s={elapsed_s:.1f}\n",
         encoding="utf-8",
     )
 

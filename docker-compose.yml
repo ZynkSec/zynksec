@@ -117,16 +117,17 @@ services:
     # cgroup-scoped, Docker surfaces it as a clean bash exit
     # (ExitCode=0, OOMKilled=false), making the failure mode invisible.
     #
-    # 5 GiB sized for AGGRESSIVE (Phase 1 Sprint 3): HIGH attack
+    # 6 GiB sized for AGGRESSIVE (Phase 1 Sprint 3): HIGH attack
     # strength + every scanner enabled + LOW alert threshold + 4
-    # threads/host can grow the JVM heap to ~3 GiB on dense targets;
-    # 5 GiB at the cgroup leaves ~1.5 GiB headroom for non-heap JVM
-    # overhead (metaspace, JIT cache, native buffers, thread stacks,
-    # OS page cache for ZAP's session DB).  See
-    # docs/architecture/zap-resource-tuning.md for the full
-    # heap-vs-cgroup math; the short rule of thumb is Xmx ~= 60-70%
-    # of cgroup so you fail with OutOfMemoryError instead of silent
-    # SIGKILL.
+    # threads/host runs the JVM heap up against ``-Xmx3500m`` and
+    # accumulates ~1.5-2.0 GiB of non-heap RSS on uninterrupted runs
+    # (metaspace + JIT cache + thread stacks + ZAP's session-DB page
+    # cache).  Empirically a clean AGGRESSIVE run on a thin subpath
+    # peaked at ~5.1 GiB total RSS — 5 GiB was right at the cap, so
+    # 6 GiB now gives the documented 30 % non-heap headroom (3500m /
+    # 6144 ≈ 57 %, well inside the 60-70 % rule of thumb).  See
+    # docs/architecture/zap-resource-tuning.md for the full heap-vs-
+    # cgroup math.
     #
     # Note: zaproxy/zap-stable runs bash as PID 1 with java as a child,
     # so cgroup OOMs of the JVM do NOT set docker inspect's OOMKilled
@@ -136,8 +137,8 @@ services:
     # supplied ``-Xmx*`` arg though — it's the only override mechanism
     # that survives both the in-script auto-sizing and the hardcoded
     # ``-Xmx1959m`` line, which is why it's part of ``command:`` below.
-    mem_limit: 5g
-    memswap_limit: 5g
+    mem_limit: 6g
+    memswap_limit: 6g
     # ZAP is NOT host-published.  Only the worker reaches the ZAP
     # JSON API on :8090 via zynksec-scan; ZAP reaches targets via
     # zynksec-targets (docs/04 §0.6 + CLAUDE.md §17).
