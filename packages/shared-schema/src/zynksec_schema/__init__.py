@@ -19,6 +19,7 @@ from zynksec_schema.finding import (
     Taxonomy,
 )
 from zynksec_schema.fingerprint import compute_fingerprint, normalize_url
+from zynksec_schema.scan_profile import ScanProfile
 
 __version__ = "0.0.0"
 
@@ -30,6 +31,7 @@ __all__ = [
     "Lifecycle",
     "LifecycleStatus",
     "Location",
+    "ScanProfile",
     "Severity",
     "SeverityLevel",
     "Taxonomy",
