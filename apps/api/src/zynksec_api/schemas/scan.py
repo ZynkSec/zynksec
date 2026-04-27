@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl
+from zynksec_schema import ScanProfile
 
 from zynksec_api.schemas.finding import FindingRead
 
@@ -21,12 +22,19 @@ class ScanCreate(BaseModel):
 
     ``project_id`` is optional in Phase 0; if absent, the handler
     looks up / creates the implicit "Local Dev" project (docs/04 §0.16).
+
+    ``scan_profile`` controls engine intensity.  The schema accepts
+    every :class:`ScanProfile` value so the OpenAPI spec advertises
+    them as valid for clients planning ahead; the router rejects
+    profiles whose implementations haven't landed yet with a
+    descriptive 422.  Sprint 1 ships ``PASSIVE`` only.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     target_url: HttpUrl
     project_id: uuid.UUID | None = None
+    scan_profile: ScanProfile = ScanProfile.PASSIVE
 
 
 class ScanRead(BaseModel):
