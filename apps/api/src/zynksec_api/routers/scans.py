@@ -85,6 +85,7 @@ def _scan_to_read(scan: Scan, findings: list[object]) -> ScanRead:
         id=scan.id,
         project_id=scan.project_id,
         target_url=scan.target_url,
+        scan_profile=ScanProfile(scan.scan_profile),
         status=scan.status,  # type: ignore[arg-type]
         started_at=scan.started_at,
         completed_at=scan.completed_at,
@@ -115,6 +116,7 @@ def create_scan(
     scan = Scan(
         project_id=project.id,
         target_url=str(body.target_url),
+        scan_profile=body.scan_profile.value,
         status="queued",
     )
     repo.add(session, scan)

@@ -43,6 +43,8 @@ class ScanRead(BaseModel):
 
     ``findings`` is populated by the GET handler (the POST handler
     returns an empty list since the scan hasn't started yet).
+    ``scan_profile`` echoes the engine intensity the scan was started
+    under, in its enum wire form (``"PASSIVE"`` today).
     """
 
     model_config = ConfigDict(frozen=True)
@@ -50,6 +52,7 @@ class ScanRead(BaseModel):
     id: uuid.UUID
     project_id: uuid.UUID
     target_url: str
+    scan_profile: ScanProfile
     status: ScanStatus
     started_at: datetime | None = None
     completed_at: datetime | None = None

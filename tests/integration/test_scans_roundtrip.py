@@ -66,12 +66,45 @@ def test_post_scan_leaves_queued_once_worker_picks_up(
     uuid.UUID(scan_id)  # must be a valid UUID
     assert posted_body["status"] == "queued"
     assert posted_body["findings"] == []
+    # Phase 1 Sprint 1: scan_profile defaults to PASSIVE when omitted
+    # and round-trips on both POST and GET responses.
+    assert posted_body["scan_profile"] == "PASSIVE"
 
     body = _poll_until_off_queued(api_client, scan_id)
     assert body["status"] in {"running", "completed", "failed"}
+    assert body["scan_profile"] == "PASSIVE"
 
     # Direct DB check — catches API/DB drift.
     stmt = select(Scan).where(Scan.id == uuid.UUID(scan_id))
     row = db_session.execute(stmt).scalar_one()
     assert str(row.id) == scan_id
     assert row.status in {"running", "completed", "failed"}
+    assert row.scan_profile == "PASSIVE"
+
+
+def test_post_scan_with_explicit_passive_profile_round_trips(
+    api_client: httpx.Client,
+    db_session: Session,
+) -> None:
+    """Explicit ``scan_profile: 'PASSIVE'`` is persisted, dispatched to
+    the worker, and echoed on the GET response — same shape as the
+    omitted-field default."""
+    response = api_client.post(
+        "/api/v1/scans",
+        json={
+            "target_url": "http://juice-shop:3000/",
+            "scan_profile": "PASSIVE",
+        },
+    )
+    assert response.status_code == 202, response.text
+    posted_body = response.json()
+    assert posted_body["scan_profile"] == "PASSIVE"
+
+    scan_id = posted_body["id"]
+    body = _poll_until_off_queued(api_client, scan_id)
+    assert body["status"] in {"running", "completed", "failed"}
+    assert body["scan_profile"] == "PASSIVE"
+
+    stmt = select(Scan).where(Scan.id == uuid.UUID(scan_id))
+    row = db_session.execute(stmt).scalar_one()
+    assert row.scan_profile == "PASSIVE"
