@@ -56,15 +56,22 @@ passive scan against the intentionally-vulnerable
 [OWASP Juice Shop](https://owasp.org/www-project-juice-shop/) target:
 
 ```bash
-# POST a scan
+# POST a scan (scan_profile is optional; default is PASSIVE)
 curl -X POST http://localhost:8000/api/v1/scans \
   -H 'content-type: application/json' \
-  -d '{"target_url":"http://juice-shop:3000/"}'
-# -> {"id":"3f16096a-...","status":"queued","findings":[]}
+  -d '{"target_url":"http://juice-shop:3000/","scan_profile":"PASSIVE"}'
+# -> {"id":"3f16096a-...","status":"queued","scan_profile":"PASSIVE","findings":[]}
 
 # Poll until complete (passive scan runs in ~15–30 s)
 curl http://localhost:8000/api/v1/scans/3f16096a-8c1e-4721-b387-39652e9304bd
 ```
+
+The `scan_profile` field is optional and defaults to `PASSIVE`.
+`SAFE_ACTIVE` and `AGGRESSIVE` are reserved on the OpenAPI spec for
+clients planning ahead but the API rejects them with a descriptive
+`422 scan_profile_not_implemented` until their implementations land
+in upcoming Phase 1 sprints. Multi-target scanning is deferred to
+Phase 2.
 
 A complete scan response (trimmed to three of the 327 findings on
 this run) looks like:
@@ -73,6 +80,7 @@ this run) looks like:
 {
   "id": "3f16096a-8c1e-4721-b387-39652e9304bd",
   "target_url": "http://juice-shop:3000/",
+  "scan_profile": "PASSIVE",
   "status": "completed",
   "started_at": "2026-04-24T18:09:39.777024Z",
   "completed_at": "2026-04-24T18:10:00.620279Z",
