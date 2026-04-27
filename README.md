@@ -30,7 +30,7 @@ Zynksec is the tool a solo founder, a small team, or a security-curious develope
 
 ### Prerequisites
 
-- Docker Desktop (or any Compose-capable runtime), with **5 GiB of
+- Docker Desktop (or any Compose-capable runtime), with **6 GiB of
   free RAM available to the ZAP container** (the AGGRESSIVE profile
   asks for it, and the cgroup is shared across all profiles). Default
   Docker Desktop allocates 4-8 GiB to its VM; check via
@@ -100,7 +100,8 @@ Available profiles:
   fully own** — never staging-shared, never production, never
   anything someone else cares about. The profile pushes ZAP's JVM
   heap to ~3 GiB and saturates the target's request handler.
-  Hardware: 5 GiB free RAM (cgroup is sized to 5 GiB; Xmx is 3500m;
+  Hardware: 6 GiB free RAM (cgroup is sized to 6 GiB; Xmx is 3500m,
+  ≈57% of cgroup, leaving ~2.5 GiB for non-heap JVM overhead;
   see [`docs/architecture/zap-resource-tuning.md`](docs/architecture/zap-resource-tuning.md)
   for the math). Run the AGGRESSIVE integration test locally with:
 

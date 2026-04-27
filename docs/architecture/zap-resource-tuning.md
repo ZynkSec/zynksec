@@ -1,12 +1,12 @@
 # ZAP container resource tuning
 
-> **Status:** Phase 1 Sprint 3 — current tuning is `mem_limit: 5g` + `-Xmx3500m`.
+> **Status:** Phase 1 Sprint 3 — current tuning is `mem_limit: 6g` + `-Xmx3500m`.
 > **When to read this:** before changing the ZAP container's `mem_limit`, the JVM `-Xmx*` arg, or both. They have to move together.
 
 ## TL;DR
 
 ```
-cgroup mem_limit (5 GiB)  >=  Xmx (3500 MiB)  +  non-heap JVM overhead (~1.5 GiB)
+cgroup mem_limit (6 GiB)  >=  Xmx (3500 MiB)  +  non-heap JVM overhead (~2.5 GiB)
 ```
 
 If `Xmx` sits above ~70 % of `mem_limit`, the kernel SIGKILLs the JVM before it can throw `OutOfMemoryError`. You see ExitCode=0, OOMKilled=false, and a worker that just gets a `ConnectError` mid-scan with no breadcrumb. That's the failure mode this doc exists to prevent.
@@ -34,16 +34,18 @@ A modern HotSpot JVM running ZAP allocates several pools that don't count toward
 | Thread stacks | ~1 MiB × thread count | At `threadPerHost = 4` plus daemon threads, ~50-100 MiB. |
 | OS page cache for ZAP's session DB (HSQLDB) | varies | RSS shows this; charged to cgroup. |
 
-Sum: typically **1.0-1.5 GiB of non-heap RSS** on a real scan. If `mem_limit` minus `-Xmx` is smaller than that, the cgroup trips while the heap still has headroom — the worst possible outcome (no OOMError, just SIGKILL).
+Sum: typically **1.5-2.5 GiB of non-heap RSS** on a real, uninterrupted AGGRESSIVE scan. If `mem_limit` minus `-Xmx` is smaller than that, the cgroup trips while the heap still has headroom — the worst possible outcome (no OOMError, just SIGKILL).
 
-The 70 % rule of thumb gives 30 % cgroup headroom for non-heap. At `mem_limit: 5g`, that's 1.5 GiB of headroom and `-Xmx3500m`. At `mem_limit: 2g` (Sprint 0/1's setting), 70 % was 1400 MiB, which is exactly what `zap.sh`'s auto-sized `-Xmx` was hitting before Sprint 3.
+The 60-70 % rule of thumb gives 30-40 % cgroup headroom for non-heap. At `mem_limit: 6g`, that's ~2.5 GiB of headroom against `-Xmx3500m` (3500 / 6144 ≈ 57 %). At `mem_limit: 2g` (Sprint 0/1's setting), 70 % was 1400 MiB, which is exactly what `zap.sh`'s auto-sized `-Xmx` was hitting before Sprint 3.
+
+> **Why 6 GiB and not 5 GiB?** Sprint 3 originally shipped 5 GiB. An uninterrupted AGGRESSIVE run on a thin subpath (`/rest/products/search?q=apple`) peaked at **5.10 GiB total RSS** — exactly at the cgroup cap, with no kernel OOM but zero headroom. Earlier runs in the same suite peaked at only ~2 GiB because concurrent worker tasks were trampling each other's ZAP sessions and forcing GC; once `worker_concurrency=1` made each scan run to completion uninterrupted, the true non-heap footprint surfaced. 6 GiB restores the documented headroom under that real number.
 
 ## The current numbers
 
 ```yaml
 # docker-compose.yml (Sprint 3)
-mem_limit: 5g          # 5368709120 bytes
-memswap_limit: 5g      # disable swap — we want memory pressure to hit the OOM killer fast
+mem_limit: 6g          # 6442450944 bytes
+memswap_limit: 6g      # disable swap — we want memory pressure to hit the OOM killer fast
 command:
   - zap.sh
   - -Xmx3500m          # JVM max heap, set via zap.sh's CLI arg path
@@ -51,13 +53,13 @@ command:
   ...
 ```
 
-`5 GiB / 3500 MiB ≈ 70 %`. Verified empirically:
+`3500 MiB / 6144 MiB ≈ 57 %`. Verified empirically (peak total RSS observed in the AGGRESSIVE integration test):
 
-- AGGRESSIVE scan on `juice-shop:3000/rest/products/search?q=apple` peaks at ~1.7-2.0 GiB heap and ~2.5-3.0 GiB total RSS — comfortably inside the 5 GiB cgroup with headroom.
-- SAFE_ACTIVE peaks at ~1.7 GiB total RSS (already-known number from Sprint 2's sidecar report).
+- AGGRESSIVE scan on `juice-shop:3000/rest/user/login` peaks at ~5.1 GiB total RSS — well inside the 6 GiB cgroup with the documented ~1 GiB of remaining headroom.
+- SAFE_ACTIVE on `juice-shop:3000/rest/products/search?q=apple` peaks at ~1.7 GiB total RSS (Sprint 2 sidecar).
 - PASSIVE peaks at ~700-900 MiB.
 
-The 5 GiB cap is shared across all profiles. PASSIVE and SAFE_ACTIVE just don't use the headroom.
+The 6 GiB cap is shared across all profiles. PASSIVE and SAFE_ACTIVE just don't use the headroom.
 
 ## Why we set Xmx via `zap.sh` CLI arg, not `_JAVA_OPTIONS`
 
