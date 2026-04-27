@@ -15,11 +15,17 @@ from fastapi import APIRouter, Depends, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from zynksec_db import FindingRepository, Project, Scan, ScanRepository
+from zynksec_schema import ScanProfile
 
 from zynksec_api.celery_client import enqueue_scan
 from zynksec_api.db import get_session
-from zynksec_api.exceptions import ScanNotFound
+from zynksec_api.exceptions import ScanNotFound, ScanProfileNotImplemented
 from zynksec_api.schemas import ScanCreate, ScanRead, finding_from_row
+
+# Phase 1 Sprint 1 ships ``PASSIVE`` only.  Other profiles are valid in
+# the OpenAPI spec but rejected at runtime so users see a clear error
+# instead of a Celery task failure.
+_IMPLEMENTED_SCAN_PROFILES: frozenset[ScanProfile] = frozenset({ScanProfile.PASSIVE})
 
 router = APIRouter(prefix="/api/v1/scans", tags=["scans"])
 
@@ -99,6 +105,12 @@ def create_scan(
     repo: ScanRepoDep,
 ) -> ScanRead:
     """Persist a ``queued`` scan and dispatch the ``scan.run`` task."""
+    if body.scan_profile not in _IMPLEMENTED_SCAN_PROFILES:
+        raise ScanProfileNotImplemented(
+            f"scan_profile {body.scan_profile.value!r} is accepted by the schema but "
+            "not yet implemented. Tracking in Phase 1 Sprint 2. Use 'PASSIVE' for now."
+        )
+
     project = _resolve_project(session, body.project_id)
     scan = Scan(
         project_id=project.id,

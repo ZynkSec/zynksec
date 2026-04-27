@@ -51,3 +51,17 @@ class ScanNotFound(ZynksecError):  # noqa: N818 — HTTPException-style short na
 
     code = "scan_not_found"
     http_status = status.HTTP_404_NOT_FOUND
+
+
+class ScanProfileNotImplemented(ZynksecError):  # noqa: N818 — HTTPException-style
+    """422 — the requested scan_profile is reserved but not yet implemented.
+
+    The ``ScanProfile`` enum advertises ``SAFE_ACTIVE`` and
+    ``AGGRESSIVE`` so the OpenAPI spec stays stable for clients
+    planning ahead, but Sprint 1 only ships ``PASSIVE``.  The
+    descriptive 422 here protects users from hitting the
+    :class:`NotImplementedError` the plugin would raise downstream.
+    """
+
+    code = "scan_profile_not_implemented"
+    http_status = status.HTTP_422_UNPROCESSABLE_ENTITY
