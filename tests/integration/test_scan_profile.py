@@ -1,13 +1,12 @@
-"""scan_profile request validation — Phase 1 Sprint 2.
+"""scan_profile request validation — Phase 1 Sprint 3.
 
 Asserts the API surface around the ``scan_profile`` field:
 
-    1. ``SAFE_ACTIVE`` is now accepted (202) — was a descriptive 422
-       in Sprint 1.  The full SAFE_ACTIVE→worker→ZAP→findings flow is
-       covered by ``test_safe_active_scan.py`` (long-running).
-    2. ``AGGRESSIVE`` still returns the descriptive
-       ``scan_profile_not_implemented`` 422; the roadmap pointer in the
-       message now names Sprint 3.
+    1. ``SAFE_ACTIVE`` is accepted (202).  Full plugin-level run is
+       covered by ``test_safe_active_scan.py``.
+    2. ``AGGRESSIVE`` is accepted (202) from Sprint 3 on.  Full
+       plugin-level run lives in ``test_aggressive_scan.py``
+       (opt-in via ``RUN_AGGRESSIVE_TESTS=1``).
     3. Pydantic rejects arbitrary strings with FastAPI's default 422.
 
 No mocks (CLAUDE.md §7) — these tests need a live API process, which
@@ -22,9 +21,7 @@ import httpx
 def test_post_scan_with_safe_active_is_accepted(
     api_client: httpx.Client,
 ) -> None:
-    """SAFE_ACTIVE is implemented from Sprint 2 — 202 with the field
-    echoed in the response body.  The full active-scan run lives in
-    ``test_safe_active_scan.py`` so this test stays cheap."""
+    """SAFE_ACTIVE returns 202 with the field echoed in the response body."""
     response = api_client.post(
         "/api/v1/scans",
         json={
@@ -38,11 +35,13 @@ def test_post_scan_with_safe_active_is_accepted(
     assert body["status"] == "queued"
 
 
-def test_post_scan_with_aggressive_returns_descriptive_422(
+def test_post_scan_with_aggressive_is_accepted(
     api_client: httpx.Client,
 ) -> None:
-    """AGGRESSIVE is reserved but not implemented — descriptive 422
-    pointing at Phase 1 Sprint 3."""
+    """AGGRESSIVE returns 202 from Sprint 3 — was a descriptive 422
+    in Sprints 1 and 2.  This test stays cheap (no scan run); the full
+    AGGRESSIVE→worker→ZAP→findings flow is opt-in in
+    ``test_aggressive_scan.py``."""
     response = api_client.post(
         "/api/v1/scans",
         json={
@@ -50,25 +49,19 @@ def test_post_scan_with_aggressive_returns_descriptive_422(
             "scan_profile": "AGGRESSIVE",
         },
     )
-    assert response.status_code == 422, response.text
+    assert response.status_code == 202, response.text
     body = response.json()
-    assert body["code"] == "scan_profile_not_implemented"
-    assert "AGGRESSIVE" in body["message"]
-    assert "not yet implemented" in body["message"]
-    # Roadmap pointer is part of the contract — a future copy-edit
-    # that drops it would erase the user's "what next" signal.
-    assert "Sprint 3" in body["message"]
-    # Canonical {code, message, request_id} envelope (CLAUDE.md §4) —
-    # request_id must carry the correlation_id, not just be shaped like it.
-    assert body["request_id"]
+    assert body["scan_profile"] == "AGGRESSIVE"
+    assert body["status"] == "queued"
 
 
 def test_post_scan_with_invalid_profile_returns_pydantic_422(
     api_client: httpx.Client,
 ) -> None:
-    """Unknown profile strings are rejected by Pydantic before the router
-    runs — 422 from FastAPI's RequestValidationError handler, distinct
-    from the :class:`ScanProfileNotImplemented` shape above."""
+    """Unknown profile strings are rejected by Pydantic before the
+    router runs — 422 from FastAPI's RequestValidationError handler
+    (default ``{"detail": [...]}`` shape, distinct from the canonical
+    ZynksecError envelope)."""
     response = api_client.post(
         "/api/v1/scans",
         json={
@@ -77,9 +70,6 @@ def test_post_scan_with_invalid_profile_returns_pydantic_422(
         },
     )
     assert response.status_code == 422, response.text
-    # FastAPI's default validation-error body is ``{"detail": [...]}``;
-    # the offending location is reported under ``loc`` so we can be sure
-    # the rejection is about ``scan_profile`` and not some other field.
     body = response.json()
     detail = body["detail"]
     assert any("scan_profile" in str(err.get("loc", ())) for err in detail), body
