@@ -215,6 +215,21 @@ class ZapClient:
             alertThreshold=alert_threshold,
         )
 
+    def ascan_scanners(self) -> list[dict[str, Any]]:
+        """List active scanners ZAP currently knows about.
+
+        Used to intersect our SAFE_ACTIVE disabled-scanner constant
+        against the actually-installed scanner registry — a ZAP minor
+        version change can rename / drop a scanner ID, and
+        ``disableScanners`` rejects the WHOLE batch if any ID in the
+        list is unknown.
+        """
+        payload = self._get("/JSON/ascan/view/scanners/")
+        scanners_raw = payload.get("scanners", [])
+        if not isinstance(scanners_raw, list):
+            return []
+        return [s for s in scanners_raw if isinstance(s, dict)]
+
     def ascan_disable_scanners(self, ids: list[int], *, scan_policy_name: str) -> None:
         """Disable scanners by id within a named policy.
 

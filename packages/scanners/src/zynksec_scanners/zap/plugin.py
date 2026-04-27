@@ -284,11 +284,31 @@ class ZapPlugin(ScannerPlugin):
         Idempotent: removes any pre-existing ``zynksec_safe`` policy
         first (a no-op if it doesn't exist), then adds a fresh one with
         the documented strength/threshold and disables the
-        :data:`SAFE_ACTIVE_DISABLED_SCANNERS` set.  The thread/delay
-        knobs are global daemon options — Phase 1 Sprint 2 has at most
-        one scan in flight at a time, so per-scan policy on those would
-        just be ceremony.
+        :data:`SAFE_ACTIVE_DISABLED_SCANNERS` set INTERSECTED with the
+        scanner IDs the running ZAP daemon actually exposes.  The
+        intersection matters: ``disableScanners`` rejects the whole
+        batch with HTTP 400 if any ID is unknown, and a ZAP minor-
+        version bump (e.g. SQLite-time SQLi 40024 dropping in 2.17)
+        would silently break SAFE_ACTIVE on every target until someone
+        edits the constant.  Logging the diff makes the drift visible
+        without blocking the scan.
+
+        The thread/delay knobs are global daemon options — Phase 1
+        Sprint 2 has at most one scan in flight at a time, so per-scan
+        policy on those would just be ceremony.
         """
+        live_ids = {int(s.get("id", -1)) for s in self._client.ascan_scanners()}
+        live_ids.discard(-1)
+        wanted = SAFE_ACTIVE_DISABLED_SCANNERS
+        applicable = sorted(wanted & live_ids)
+        missing = sorted(wanted - live_ids)
+        if missing:
+            _log.warning(
+                "zap.safe_policy.scanner_ids_missing",
+                missing=missing,
+                hint="ZAP minor-version drift; update SAFE_ACTIVE_DISABLED_SCANNERS",
+            )
+
         self._client.ascan_remove_scan_policy(SAFE_ACTIVE_POLICY_NAME)
         self._client.ascan_add_scan_policy(
             SAFE_ACTIVE_POLICY_NAME,
@@ -296,7 +316,7 @@ class ZapPlugin(ScannerPlugin):
             alert_threshold=SAFE_ACTIVE_ALERT_THRESHOLD,
         )
         self._client.ascan_disable_scanners(
-            sorted(SAFE_ACTIVE_DISABLED_SCANNERS),
+            applicable,
             scan_policy_name=SAFE_ACTIVE_POLICY_NAME,
         )
         self._client.ascan_set_option_thread_per_host(SAFE_ACTIVE_THREAD_PER_HOST)
@@ -306,7 +326,8 @@ class ZapPlugin(ScannerPlugin):
             policy=SAFE_ACTIVE_POLICY_NAME,
             attack_strength=SAFE_ACTIVE_ATTACK_STRENGTH,
             alert_threshold=SAFE_ACTIVE_ALERT_THRESHOLD,
-            disabled_scanners=len(SAFE_ACTIVE_DISABLED_SCANNERS),
+            disabled_scanners=len(applicable),
+            wanted_disabled=len(wanted),
             thread_per_host=SAFE_ACTIVE_THREAD_PER_HOST,
             delay_ms=SAFE_ACTIVE_DELAY_MS,
         )
