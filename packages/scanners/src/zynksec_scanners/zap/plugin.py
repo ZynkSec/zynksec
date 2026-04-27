@@ -15,13 +15,18 @@ Profile flow:
         5. passive-scan drain (active probes generate new responses)
         6. alerts view
 
-    AGGRESSIVE  — still :class:`NotImplementedError` (Phase 1 Sprint 3).
+    AGGRESSIVE  (Phase 1 Sprint 3)
+        Same flow as SAFE_ACTIVE but with the "zynksec_aggressive"
+        policy: HIGH attack strength, LOW alert threshold, ALL
+        scanners enabled, ``threadPerHost = 4`` with no per-request
+        delay.  This is the "burn the target, surface every signal"
+        mode — only run it against test environments you own and don't
+        care about (see README's prerequisites).
 
-The SAFE_ACTIVE policy is documented one constant down: it caps the
-attack/alert strength at ``MEDIUM``, pins ``threadPerHost = 1`` and a
-small per-request delay so we are a polite scanner, and disables
-heavy/slow scanner categories that don't earn their wall-clock cost on
-modern web targets (see :data:`SAFE_ACTIVE_DISABLED_SCANNERS`).
+The two active-policy specs are documented in their respective
+constant blocks below; the active-scan ceilings are looked up from
+:data:`_ASCAN_CEILING_S` per profile so a slow AGGRESSIVE run doesn't
+get truncated by SAFE_ACTIVE's tighter timeout.
 
 Each alert becomes zero-or-one Findings via :meth:`normalize`.  CLAUDE.md §5:
 only :class:`ZapClient` speaks HTTP to :8090 — this plugin is pure
@@ -153,11 +158,41 @@ SAFE_ACTIVE_DISABLED_SCANNERS: frozenset[int] = frozenset(
     }
 )
 
-#: Active-scan ceiling.  juice-shop with the SAFE policy completes in
-#: ~5-8 minutes locally; 10 min gives us slack for slower CI runners
-#: without papering over a runaway scan.  When this trips, the policy
-#: above needs revisiting — not the ceiling.
-SAFE_ACTIVE_ASCAN_CEILING_S: float = 600.0
+# ---------- AGGRESSIVE policy ----------
+# AGGRESSIVE turns every dial up.  The block mirrors SAFE_ACTIVE but
+# with no disabled scanners (everything ZAP ships is on), HIGH attack
+# strength so each scanner runs its full payload set, LOW alert
+# threshold so even low-confidence findings surface, and full
+# parallelism with no politeness delay.
+
+#: ZAP scan-policy name for AGGRESSIVE.
+AGGRESSIVE_POLICY_NAME: str = "zynksec_aggressive"
+
+#: HIGH (not INSANE).  INSANE pushes scan times into hours-or-days
+#: territory and is reserved for security researchers; HIGH is the
+#: most aggressive setting that still completes inside engineering
+#: budgets on a real target surface.
+AGGRESSIVE_ATTACK_STRENGTH: str = "HIGH"
+
+#: LOW threshold — surface low-confidence findings too.  The user opted
+#: into AGGRESSIVE and asked for noise.
+AGGRESSIVE_ALERT_THRESHOLD: str = "LOW"
+
+#: 4 threads/host matches ZAP's default for active scans.  No politeness
+#: delay; the user knows what they signed up for.
+AGGRESSIVE_THREAD_PER_HOST: int = 4
+AGGRESSIVE_DELAY_MS: int = 0
+
+
+#: Per-profile active-scan ceiling.  AGGRESSIVE is much higher than
+#: SAFE_ACTIVE because HIGH strength + every scanner enabled + LOW
+#: threshold can take 30+ min on a non-trivial subpath — and that's
+#: the design, not a bug.  When AGGRESSIVE blows past 40 min the policy
+#: needs revisiting (or the target is too dense), not the ceiling.
+_ASCAN_CEILING_S: dict[ScanProfile, float] = {
+    ScanProfile.SAFE_ACTIVE: 600.0,
+    ScanProfile.AGGRESSIVE: 2400.0,
+}
 
 
 _RISK_TO_LEVEL: dict[str, SeverityLevel] = {
@@ -187,6 +222,7 @@ class ZapPlugin(ScannerPlugin):
     supported_intensities: set[str] = {
         ScanProfile.PASSIVE.value,
         ScanProfile.SAFE_ACTIVE.value,
+        ScanProfile.AGGRESSIVE.value,
     }
     required_capabilities: set[str] = set()
 
@@ -232,10 +268,15 @@ class ZapPlugin(ScannerPlugin):
 
         if profile is ScanProfile.PASSIVE:
             self._spider_and_pscan_drain(url)
-        elif profile is ScanProfile.SAFE_ACTIVE:
+        elif profile in (ScanProfile.SAFE_ACTIVE, ScanProfile.AGGRESSIVE):
             self._spider_and_pscan_drain(url)
-            self._apply_safe_policy()
-            self._active_scan(url)
+            if profile is ScanProfile.SAFE_ACTIVE:
+                self._apply_safe_policy()
+                policy_name = SAFE_ACTIVE_POLICY_NAME
+            else:
+                self._apply_aggressive_policy()
+                policy_name = AGGRESSIVE_POLICY_NAME
+            self._active_scan(url, profile, policy_name)
             # Active probes generate fresh responses that the passive
             # analyzers re-process; drain the queue once more before
             # reading alerts so we don't miss late-arriving findings.
@@ -246,7 +287,10 @@ class ZapPlugin(ScannerPlugin):
                 reached=lambda remaining: remaining == 0,
             )
         else:
-            raise NotImplementedError(f"scan profile {profile.value!r} pending Phase 1 Sprint 3")
+            # Defensive: ScanProfile is a closed enum, so this is
+            # unreachable at runtime.  Kept so a future enum addition
+            # fails loudly here rather than silently scanning at PASSIVE.
+            raise NotImplementedError(f"scan profile {profile.value!r} not implemented")
 
         alerts = self._client.alerts(url)
         _log.info("zap.run.complete", url=url, profile=profile.value, alerts=len(alerts))
@@ -332,12 +376,45 @@ class ZapPlugin(ScannerPlugin):
             delay_ms=SAFE_ACTIVE_DELAY_MS,
         )
 
-    def _active_scan(self, url: str) -> None:
-        """Run the SAFE active scan to completion."""
-        ascan_id = self._client.ascan_scan(url, scan_policy_name=SAFE_ACTIVE_POLICY_NAME)
+    def _apply_aggressive_policy(self) -> None:
+        """Recreate the AGGRESSIVE scan policy from scratch.
+
+        Idempotent: removes any pre-existing ``zynksec_aggressive``
+        policy first, then adds a fresh one at HIGH attack strength +
+        LOW alert threshold, with NO scanners disabled — that's the
+        defining property of AGGRESSIVE relative to SAFE_ACTIVE.
+        ``threadPerHost = 4`` and ``delayInMs = 0`` give full
+        parallelism (the user opted in by selecting AGGRESSIVE).
+        """
+        self._client.ascan_remove_scan_policy(AGGRESSIVE_POLICY_NAME)
+        self._client.ascan_add_scan_policy(
+            AGGRESSIVE_POLICY_NAME,
+            attack_strength=AGGRESSIVE_ATTACK_STRENGTH,
+            alert_threshold=AGGRESSIVE_ALERT_THRESHOLD,
+        )
+        self._client.ascan_set_option_thread_per_host(AGGRESSIVE_THREAD_PER_HOST)
+        self._client.ascan_set_option_delay_in_ms(AGGRESSIVE_DELAY_MS)
+        _log.info(
+            "zap.aggressive_policy.applied",
+            policy=AGGRESSIVE_POLICY_NAME,
+            attack_strength=AGGRESSIVE_ATTACK_STRENGTH,
+            alert_threshold=AGGRESSIVE_ALERT_THRESHOLD,
+            thread_per_host=AGGRESSIVE_THREAD_PER_HOST,
+            delay_ms=AGGRESSIVE_DELAY_MS,
+        )
+
+    def _active_scan(self, url: str, profile: ScanProfile, scan_policy_name: str) -> None:
+        """Run an active scan to completion against ``url``.
+
+        ``profile`` selects the wall-clock ceiling from
+        :data:`_ASCAN_CEILING_S` so AGGRESSIVE doesn't get truncated
+        by SAFE_ACTIVE's tighter timeout.
+        """
+        ceiling_s = _ASCAN_CEILING_S[profile]
+        ascan_id = self._client.ascan_scan(url, scan_policy_name=scan_policy_name)
         self._poll(
             lambda: self._client.ascan_status(ascan_id),
-            ceiling_s=SAFE_ACTIVE_ASCAN_CEILING_S,
+            ceiling_s=ceiling_s,
             name="ascan",
             reached=lambda status: status >= 100,
         )
