@@ -46,18 +46,20 @@ def _current_correlation_id() -> str | None:
     return None
 
 
-def enqueue_scan(scan_id: str) -> None:
-    """Send the ``scan.run`` task with a string UUID argument.
+def enqueue_scan(scan_id: str, scan_profile: str) -> None:
+    """Send the ``scan.run`` task with primitive arguments.
 
-    Passes the current request's ``correlation_id`` as a task kwarg
-    (docs/04 Week-4 observability).  The primitives-only contract
-    (CLAUDE.md §5) holds — ``correlation_id`` is a UUID string, not
-    a rich object.  Celery's ``headers=`` channel looked like the
-    cleaner home for it architecturally, but custom headers don't
-    round-trip reliably through the Redis broker under task protocol
-    v2; kwargs do, and keep the wiring straightforward.
+    ``scan_profile`` is the enum's wire form (``"PASSIVE"``, ...) — the
+    worker reconstructs the :class:`ScanProfile` inside the task body
+    so the Celery payload stays primitive (CLAUDE.md §5).
+
+    Also passes the current request's ``correlation_id`` as a kwarg
+    (docs/04 Week-4 observability).  Celery's ``headers=`` channel
+    looked like the cleaner home for it architecturally, but custom
+    headers don't round-trip reliably through the Redis broker under
+    task protocol v2; kwargs do, and keep the wiring straightforward.
     """
-    kwargs: dict[str, str] = {}
+    kwargs: dict[str, str] = {"scan_profile": scan_profile}
     correlation_id = _current_correlation_id()
     if correlation_id is not None:
         kwargs["correlation_id"] = correlation_id

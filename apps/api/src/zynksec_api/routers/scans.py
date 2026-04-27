@@ -120,7 +120,7 @@ def create_scan(
     repo.add(session, scan)
     session.commit()
 
-    enqueue_scan(str(scan.id))
+    enqueue_scan(str(scan.id), body.scan_profile.value)
     # Freshly queued scans have no findings yet.
     return _scan_to_read(scan, findings=[])
 
