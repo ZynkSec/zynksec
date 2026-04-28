@@ -1,0 +1,214 @@
+"""Shared scan-execution helper used by ``scan.run`` and
+``scan_group.process``.
+
+Phase 2 Sprint 2: lifted out of ``tasks/scan.py`` so multi-target
+groups can iterate children through the same code path the
+single-scan task uses.  Single source of truth for "what does it
+mean to run one scan against one target" — both task entry points
+just thread the right primitive arguments in.
+
+The helper is sync + blocking (matches Celery's prefork-pool model)
+and returns ``True`` on completion, ``False`` on failure.  The
+caller decides whether to propagate (single-scan task: re-raise so
+Celery sees the task as failed) or to swallow (group task:
+continue to the next child).
+"""
+
+from __future__ import annotations
+
+import uuid
+from functools import lru_cache
+
+import structlog
+from sqlalchemy.orm import Session, sessionmaker
+from zynksec_db import Finding as FindingRow
+from zynksec_db import (
+    FindingRepository,
+    Scan,
+    ScanRepository,
+    engine_from_url,
+    make_session_factory,
+)
+from zynksec_scanners import ScannerPlugin, ScanTarget
+from zynksec_schema import Finding, ScanProfile
+
+from zynksec_worker.config import get_settings
+from zynksec_worker.runners import build_zap_plugin
+
+_log = structlog.get_logger(__name__)
+
+_scan_repo = ScanRepository()
+_finding_repo = FindingRepository()
+
+
+@lru_cache(maxsize=1)
+def session_factory() -> sessionmaker[Session]:
+    """Cache one engine + session factory per worker process."""
+    engine = engine_from_url(get_settings().database_url)
+    return make_session_factory(engine)
+
+
+def _load_target(
+    factory: sessionmaker[Session],
+    scan_uuid: uuid.UUID,
+    scan_profile: ScanProfile,
+) -> ScanTarget:
+    """Load the Scan row and construct a :class:`ScanTarget` for the plugin."""
+    with factory() as session:
+        scan = session.get(Scan, scan_uuid)
+        if scan is None:
+            raise RuntimeError(f"Scan {scan_uuid} vanished between enqueue and dispatch")
+        return ScanTarget(
+            kind="web_app",
+            url=scan.target_url,
+            project_id=scan.project_id,
+            scan_id=scan.id,
+            scan_profile=scan_profile,
+        )
+
+
+def _finding_to_row(finding: Finding) -> FindingRow:
+    """Convert a Pydantic :class:`Finding` to the SQLAlchemy row shape."""
+    return FindingRow(
+        id=finding.id,
+        scan_id=finding.scan_id,
+        fingerprint=finding.fingerprint,
+        schema_version=finding.schema_version,
+        taxonomy_zynksec_id=finding.taxonomy.zynksec_id,
+        cwe=finding.taxonomy.cwe,
+        owasp_top10=finding.taxonomy.owasp_top10,
+        severity_level=finding.severity.level,
+        severity_confidence=finding.severity.confidence,
+        location_url=finding.location.url,
+        location_method=finding.location.method,
+        location_parameter=finding.location.parameter,
+        evidence_engine=finding.evidence.engine,
+        evidence_rule_id=finding.evidence.rule_id,
+        evidence_request=finding.evidence.request,
+        evidence_response_excerpt=finding.evidence.response_excerpt,
+        lifecycle_status=finding.lifecycle.status,
+        first_seen_at=finding.lifecycle.first_seen_at,
+        last_seen_at=finding.lifecycle.last_seen_at,
+    )
+
+
+def _mark(
+    factory: sessionmaker[Session],
+    action: str,
+    scan_uuid: uuid.UUID,
+    *,
+    reason: str | None = None,
+) -> None:
+    """Tiny helper so status-transition boilerplate doesn't dominate the task."""
+    with factory() as session:
+        try:
+            if action == "running":
+                _scan_repo.mark_running(session, scan_uuid)
+            elif action == "completed":
+                _scan_repo.mark_completed(session, scan_uuid)
+            elif action == "failed":
+                _scan_repo.mark_failed(session, scan_uuid, reason=reason or "")
+            else:
+                raise AssertionError(f"unknown status transition: {action}")
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+
+
+def execute_scan(scan_uuid: uuid.UUID, profile: ScanProfile) -> bool:
+    """Run one scan against one target end-to-end.
+
+    Returns ``True`` if the scan completed (with or without
+    findings), ``False`` if it failed (DB row is already marked
+    ``failed`` and the failure has been logged).  Never raises —
+    the caller decides whether to propagate.
+
+    Single-scan task callers (``scan.run``) should re-raise on
+    ``False`` so Celery records the task as failed; group-task
+    callers (``scan_group.process``) should continue to the next
+    child.
+
+    The Scan's ``scan_id`` is bound to structlog contextvars at
+    entry so every log line emitted while this child runs (the
+    plugin progress lines, finding-persist lines, status
+    transitions) carries it; the bound vars are cleared on exit
+    so a subsequent child in the same task doesn't inherit a
+    stale id.
+    """
+    scan_id_str = str(scan_uuid)
+    factory = session_factory()
+    settings = get_settings()
+
+    structlog.contextvars.bind_contextvars(scan_id=scan_id_str)
+    try:
+        _log.info("scan.run.start", scan_id=scan_id_str, scan_profile=profile.value)
+        _mark(factory, "running", scan_uuid)
+
+        target = _load_target(factory, scan_uuid, profile)
+        plugin: ScannerPlugin = build_zap_plugin(settings)
+
+        if not plugin.supports(target):
+            _mark(factory, "failed", scan_uuid, reason="no scanner supports this target")
+            _log.error(
+                "scan.run.unsupported_target",
+                scan_id=scan_id_str,
+                kind=target.kind,
+                url=target.url,
+            )
+            return False
+
+        context = None
+        try:
+            context = plugin.prepare(target)
+            _log.info(
+                "scan.run.prepared",
+                scan_id=scan_id_str,
+                engine_version=context.metadata.get("engine_version"),
+            )
+
+            raw = plugin.run(context)
+            findings = list(plugin.normalize(raw, context))
+            _log.info("scan.run.normalized", scan_id=scan_id_str, count=len(findings))
+
+            if findings:
+                with factory() as session:
+                    try:
+                        _finding_repo.add_many(
+                            session,
+                            [_finding_to_row(f) for f in findings],
+                        )
+                        session.commit()
+                    except Exception:
+                        session.rollback()
+                        raise
+
+            _mark(factory, "completed", scan_uuid)
+            _log.info("scan.run.complete", scan_id=scan_id_str, findings=len(findings))
+            return True
+        except Exception as exc:
+            _log.exception("scan.run.failed", scan_id=scan_id_str, error=str(exc))
+            try:
+                _mark(factory, "failed", scan_uuid, reason=str(exc))
+            except Exception as secondary:  # noqa: BLE001 — best-effort bookkeeping
+                _log.error(
+                    "scan.run.mark_failed_errored",
+                    scan_id=scan_id_str,
+                    error=str(secondary),
+                )
+            return False
+        finally:
+            if context is not None:
+                try:
+                    plugin.teardown(context)
+                except Exception as te:  # noqa: BLE001 — teardown is best-effort
+                    _log.warning(
+                        "scan.run.teardown_failed",
+                        scan_id=scan_id_str,
+                        error=str(te),
+                    )
+    finally:
+        # Clear the per-child binding so subsequent log lines in
+        # the same Celery task (e.g. the next iteration of a
+        # ScanGroup) don't carry a stale scan_id.
+        structlog.contextvars.unbind_contextvars("scan_id")
