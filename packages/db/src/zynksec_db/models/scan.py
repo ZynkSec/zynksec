@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import DateTime, Enum, ForeignKey, Index, String, func
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from zynksec_db.base import Base
+
+if TYPE_CHECKING:
+    from zynksec_db.models.target import Target
 
 
 class Scan(Base):
@@ -30,6 +34,22 @@ class Scan(Base):
         nullable=False,
     )
     target_url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    # Phase 2 Sprint 1: optional FK to the persistent Target resource.
+    # Nullable — pre-existing rows + the legacy ``target_url`` POST path
+    # both leave it null.  ``ON DELETE RESTRICT`` so an operator can't
+    # delete a Target out from under a scan that references it
+    # (the API surfaces this as 409 ``target_has_scans``).
+    target_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("targets.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    # Eager-load via JOIN.  ``GET /api/v1/scans/{id}`` returns the
+    # target embedded in the response body, and the scan-create
+    # handler reads ``scan.target.url`` immediately after persistence;
+    # avoiding a second SELECT keeps the hot path single-query.
+    target: Mapped[Target | None] = relationship("Target", lazy="joined")
     # Stored as a free-form short string rather than a Postgres ENUM so
     # adding profiles in future sprints (Sprint 2: SAFE_ACTIVE,
     # Sprint 3: AGGRESSIVE) doesn't need a Postgres ALTER TYPE — the

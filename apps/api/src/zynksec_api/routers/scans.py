@@ -12,19 +12,17 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, status
-from sqlalchemy import select
 from sqlalchemy.orm import Session
-from zynksec_db import FindingRepository, Project, Scan, ScanRepository
+from zynksec_db import FindingRepository, Scan, ScanRepository
 from zynksec_schema import ScanProfile
 
 from zynksec_api.celery_client import enqueue_scan
 from zynksec_api.db import get_session
 from zynksec_api.exceptions import ScanNotFound
-from zynksec_api.schemas import ScanCreate, ScanRead, finding_from_row
+from zynksec_api.routers._project_resolution import resolve_project_for_request
+from zynksec_api.schemas import ScanCreate, ScanRead, TargetSummary, finding_from_row
 
 router = APIRouter(prefix="/api/v1/scans", tags=["scans"])
-
-_IMPLICIT_PROJECT_NAME = "Local Dev"
 
 
 def get_scan_repository() -> ScanRepository:
@@ -44,42 +42,31 @@ ScanRepoDep = Annotated[ScanRepository, Depends(get_scan_repository)]
 FindingRepoDep = Annotated[FindingRepository, Depends(get_finding_repository)]
 
 
-def _resolve_project(session: Session, project_id: uuid.UUID | None) -> Project:
-    """Pick the project the new scan will belong to.
-
-    If ``project_id`` is supplied, load it.  Otherwise (or if the given
-    id has no matching row — Phase 0 is intentionally lenient here),
-    fall back to the implicit "Local Dev" project (docs/04 §0.16).
-    Phase 1 adds strict validation + 404 on unknown project ids.
-    """
-    if project_id is not None:
-        found = session.get(Project, project_id)
-        if found is not None:
-            return found
-    return _get_or_create_local_dev(session)
-
-
-def _get_or_create_local_dev(session: Session) -> Project:
-    stmt = select(Project).where(Project.name == _IMPLICIT_PROJECT_NAME)
-    project = session.execute(stmt).scalar_one_or_none()
-    if project is None:
-        project = Project(name=_IMPLICIT_PROJECT_NAME)
-        session.add(project)
-        session.flush()
-    return project
-
-
 def _scan_to_read(scan: Scan, findings: list[object]) -> ScanRead:
     """Explicit ORM -> Pydantic construction.
 
     Constructed field-by-field (rather than ``model_validate(scan)``)
     so the ``findings`` list is always well-typed — the ORM row has
     no ``findings`` attribute.
+
+    The ``target`` field is built lazily from the loaded relationship
+    when ``scan.target_id`` is set, ``None`` otherwise (legacy
+    target_url scans + pre-Phase-2 rows).
     """
+    target_summary: TargetSummary | None = None
+    if scan.target_id is not None:
+        target_row = scan.target  # SQLAlchemy lazy-load via FK
+        if target_row is not None:
+            target_summary = TargetSummary(
+                id=target_row.id,
+                name=target_row.name,
+                url=target_row.url,
+            )
     return ScanRead(
         id=scan.id,
         project_id=scan.project_id,
         target_url=scan.target_url,
+        target=target_summary,
         scan_profile=ScanProfile(scan.scan_profile),
         status=scan.status,  # type: ignore[arg-type]
         started_at=scan.started_at,
@@ -106,7 +93,7 @@ def create_scan(
     Pydantic rejects invalid wire values at the schema layer, so no
     runtime gate is needed here.
     """
-    project = _resolve_project(session, body.project_id)
+    project = resolve_project_for_request(session, body.project_id)
     scan = Scan(
         project_id=project.id,
         target_url=str(body.target_url),
