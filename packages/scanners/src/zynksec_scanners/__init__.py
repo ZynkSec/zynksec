@@ -5,9 +5,11 @@ types (ScanTarget, ScanContext, RawScanResult, HealthStatus) live in
 :mod:`zynksec_scanners.types`.  Engine implementations live in sibling
 sub-packages (``.zap``, future ``.nuclei``, ...).
 
-Phase 2 Sprint 1 renamed the runtime parameter bundle from ``Target``
-to ``ScanTarget``.  ``Target`` is re-exported as a deprecation alias
-so out-of-tree plugins keep importing through the transition.
+The runtime parameter bundle is :class:`ScanTarget` (the
+``Target = ScanTarget`` deprecation alias was removed in Phase 2
+Sprint 1 — the bare ``Target`` name now belongs to the persistent
+ORM resource in :mod:`zynksec_db`).  Out-of-tree plugins must import
+``ScanTarget`` directly.
 """
 
 from zynksec_scanners.base import ScannerPlugin
@@ -17,7 +19,6 @@ from zynksec_scanners.types import (
     ScanContext,
     ScanProfile,
     ScanTarget,
-    Target,
     TargetKind,
 )
 
@@ -30,7 +31,6 @@ __all__ = [
     "ScanProfile",
     "ScanTarget",
     "ScannerPlugin",
-    "Target",
     "TargetKind",
     "__version__",
 ]

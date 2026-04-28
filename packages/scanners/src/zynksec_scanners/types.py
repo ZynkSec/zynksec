@@ -10,11 +10,13 @@ of truth shared by the API request body, the worker task signature,
 and this plugin contract) and is re-exported here so existing imports
 ``from zynksec_scanners import ScanProfile`` keep working.
 
-Phase 2 Sprint 1 renamed the runtime parameter bundle from ``Target``
-to :class:`ScanTarget` so the bare name ``Target`` is free for the
-new persistent ``Target`` ORM resource (in :mod:`zynksec_db`) that the
-API exposes via ``/api/v1/targets``.  ``Target`` remains as a
-deprecation alias here so out-of-tree plugins keep importing.
+The runtime parameter bundle is :class:`ScanTarget` (was named
+``Target`` before Phase 2 Sprint 1).  The bare name ``Target`` is now
+the persistent ORM resource in :mod:`zynksec_db` that the API
+exposes via ``/api/v1/targets`` — they are deliberately separate
+namespaces.  The old ``Target = ScanTarget`` deprecation alias was
+removed when the persistent resource landed; out-of-tree plugins
+must import ``ScanTarget`` directly.
 """
 
 from __future__ import annotations
@@ -33,7 +35,6 @@ __all__ = [
     "ScanContext",
     "ScanProfile",
     "ScanTarget",
-    "Target",
     "TargetKind",
 ]
 
@@ -57,11 +58,6 @@ class ScanTarget:
     project_id: uuid.UUID
     scan_id: uuid.UUID
     scan_profile: ScanProfile = ScanProfile.PASSIVE
-
-
-# DEPRECATED: renamed to ScanTarget in Phase 2 Sprint 1; alias removed
-# once all out-of-tree plugins migrate.  In-tree code uses ScanTarget.
-Target = ScanTarget
 
 
 @dataclass(frozen=True)
