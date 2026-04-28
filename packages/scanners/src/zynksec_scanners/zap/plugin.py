@@ -60,7 +60,7 @@ from zynksec_scanners.types import (
     RawScanResult,
     ScanContext,
     ScanProfile,
-    Target,
+    ScanTarget,
 )
 from zynksec_scanners.zap.client import ZapClient, ZapError
 from zynksec_scanners.zap.owasp_mapping import owasp_for_cwe
@@ -241,10 +241,10 @@ class ZapPlugin(ScannerPlugin):
         self._client = client
 
     # ---- contract ----
-    def supports(self, target: Target) -> bool:
+    def supports(self, target: ScanTarget) -> bool:
         return target.kind in self.supported_target_kinds
 
-    def prepare(self, target: Target) -> ScanContext:
+    def prepare(self, target: ScanTarget) -> ScanContext:
         # Reachability + version probe.  Raises ZapError if ZAP isn't
         # up; the worker catches and marks the scan failed.
         version = self._client.version()

@@ -17,7 +17,7 @@ from collections.abc import Iterator
 
 from zynksec_schema import Finding
 
-from zynksec_scanners.types import HealthStatus, RawScanResult, ScanContext, Target
+from zynksec_scanners.types import HealthStatus, RawScanResult, ScanContext, ScanTarget
 
 
 class ScannerPlugin(ABC):
@@ -37,11 +37,11 @@ class ScannerPlugin(ABC):
 
     # ---- Lifecycle ----
     @abstractmethod
-    def supports(self, target: Target) -> bool:
+    def supports(self, target: ScanTarget) -> bool:
         """Return True iff this engine can scan this target."""
 
     @abstractmethod
-    def prepare(self, target: Target) -> ScanContext:
+    def prepare(self, target: ScanTarget) -> ScanContext:
         """Build engine-specific state and validate reachability.
 
         Returns an opaque context the orchestrator passes to

@@ -3,7 +3,7 @@
 Walking-skeleton flow (docs/04 §0.9 steps 6-15):
 
     1. mark running
-    2. load Scan row, build Target
+    2. load Scan row, build ScanTarget
     3. build ScannerPlugin via the factory (CLAUDE.md §3 D)
     4. prepare -> run -> normalize -> persist -> teardown
     5. mark completed (or failed)
@@ -28,7 +28,7 @@ from zynksec_db import (
     engine_from_url,
     make_session_factory,
 )
-from zynksec_scanners import ScannerPlugin, Target
+from zynksec_scanners import ScannerPlugin, ScanTarget
 from zynksec_schema import Finding, ScanProfile
 
 from zynksec_worker.celery_app import celery_app
@@ -52,8 +52,8 @@ def _load_target(
     factory: sessionmaker[Session],
     scan_uuid: uuid.UUID,
     scan_profile: ScanProfile,
-) -> Target:
-    """Load the Scan row and construct a :class:`Target` for the plugin.
+) -> ScanTarget:
+    """Load the Scan row and construct a :class:`ScanTarget` for the plugin.
 
     ``scan_profile`` is supplied by the caller (the Celery task entry
     point, which converts the primitive task kwarg into the enum) so
@@ -63,7 +63,7 @@ def _load_target(
         scan = session.get(Scan, scan_uuid)
         if scan is None:
             raise RuntimeError(f"Scan {scan_uuid} vanished between enqueue and dispatch")
-        return Target(
+        return ScanTarget(
             kind="web_app",
             url=scan.target_url,
             project_id=scan.project_id,

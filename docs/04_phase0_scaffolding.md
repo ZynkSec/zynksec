@@ -307,7 +307,7 @@ The abstract base in `packages/scanners/src/zynksec_scanners/base.py` declares t
 
 Methods (signatures only — implementations come during Phase 0 build):
 
-- `supports(target: Target) -> bool` — does this engine know how to scan this kind of target?
+- `supports(target: ScanTarget) -> bool` — does this engine know how to scan this kind of target?
 - `prepare(scan: Scan) -> ScanContext` — set up engine state, validate reachability, allocate resources.
 - `run(context: ScanContext) -> RawScanResult` — execute the scan; blocking, returns when done.
 - `normalize(raw: RawScanResult) -> Iterator[Finding]` — turn engine-native output into the canonical `Finding` shape.
