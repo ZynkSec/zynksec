@@ -1,7 +1,8 @@
-"""ORM models — the three tables Phase 0 Week 2 persists."""
+"""ORM models — Project, Target, Scan, Finding."""
 
 from zynksec_db.models.finding import Finding
 from zynksec_db.models.project import Project
 from zynksec_db.models.scan import Scan
+from zynksec_db.models.target import Target
 
-__all__ = ["Finding", "Project", "Scan"]
+__all__ = ["Finding", "Project", "Scan", "Target"]

@@ -51,3 +51,51 @@ class ScanNotFound(ZynksecError):  # noqa: N818 — HTTPException-style short na
 
     code = "scan_not_found"
     http_status = status.HTTP_404_NOT_FOUND
+
+
+class TargetNotFound(ZynksecError):  # noqa: N818 — HTTPException-style short name
+    """404 — no target row with the given id."""
+
+    code = "target_not_found"
+    http_status = status.HTTP_404_NOT_FOUND
+
+
+class TargetNameConflict(ZynksecError):  # noqa: N818 — HTTPException-style
+    """409 — a Target with this ``name`` already exists in the project.
+
+    The DB-level guarantee is the ``uq_targets_project_id_name``
+    constraint; the API surfaces it as a polite 409 rather than
+    letting an ``IntegrityError`` traceback escape.
+    """
+
+    code = "target_name_conflict"
+    http_status = status.HTTP_409_CONFLICT
+
+
+class TargetHasScans(ZynksecError):  # noqa: N818 — HTTPException-style
+    """409 — DELETE /targets/{id} when scans still reference the target.
+
+    The FK on ``scans.target_id`` is ``ON DELETE RESTRICT``; this is
+    the polite pre-check before the DB constraint would fire, with a
+    canonical envelope telling the operator how many scans are in the
+    way.
+    """
+
+    code = "target_has_scans"
+    http_status = status.HTTP_409_CONFLICT
+
+
+class ScanTargetSpecConflict(ZynksecError):  # noqa: N818 — HTTPException-style
+    """422 — POST /scans with both or neither of ``target_id``/``target_url``.
+
+    The XOR check lives at the router (rather than as a Pydantic
+    ``model_validator``) so callers get the canonical envelope
+    instead of FastAPI's default ``{"detail": [...]}`` shape.
+    Pydantic's per-field validation (``HttpUrl`` for ``target_url``,
+    ``uuid.UUID`` for ``target_id``) still emits the standard 422
+    shape — that's the known
+    ``RequestValidationError`` gap, not changed in this sprint.
+    """
+
+    code = "scan_target_spec_conflict"
+    http_status = status.HTTP_422_UNPROCESSABLE_ENTITY

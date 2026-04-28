@@ -6,5 +6,6 @@ never on raw sessions.
 from zynksec_db.repositories.base import Repository
 from zynksec_db.repositories.finding import FindingRepository
 from zynksec_db.repositories.scan import ScanRepository
+from zynksec_db.repositories.target import TargetRepository
 
-__all__ = ["FindingRepository", "Repository", "ScanRepository"]
+__all__ = ["FindingRepository", "Repository", "ScanRepository", "TargetRepository"]
