@@ -257,7 +257,8 @@ CELERY_BROKER_URL=redis://redis:6379/1
 CELERY_RESULT_BACKEND=redis://redis:6379/2
 
 # ---------- ZAP ----------
-ZAP_API_URL=http://zap:8090
+ZAP_INSTANCE_COUNT=2
+ZAP_API_URL=http://zap1:8090
 ZAP_API_KEY=changeme-local-only
 ZAP_DEFAULT_PROFILE=baseline
 

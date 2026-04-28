@@ -7,6 +7,80 @@ name: zynksec
 # so daily dev isn't paying ~1.4 GiB of RAM for error-tracking infra
 # you only look at when something breaks.  All three network zones are
 # declared here (docs/04 §0.6).
+#
+# Phase 2 Sprint 3 introduces multi-instance ZAP fan-out: ``zap1`` +
+# ``zap2`` share an identical config via the YAML anchor below, and
+# matching ``worker1`` / ``worker2`` services each pin to one ZAP and
+# subscribe to one Celery queue (``zap_q_1`` / ``zap_q_2``).  Worker
+# concurrency stays at 1 per worker — the single-instance-ZAP contract
+# holds within each worker/zap pair; parallelism comes from running
+# two pairs.  ``ZAP_INSTANCE_COUNT`` (default 2, in ``.env.example``)
+# is the source of truth for "how many pairs"; the API uses it to
+# round-robin children across queues.
+
+# ---------- shared ZAP service config ----------
+# zap1 + zap2 are identical except for container_name; the anchor
+# below is YAML's standard way to keep them in lock-step.  ``-Xmx3500m``
+# in ``command`` is the ONLY mechanism that overrides ``zap.sh``'s
+# hardcoded ``-Xmx1959m`` (Phase 1 Sprint 3 investigation —
+# ``_JAVA_OPTIONS`` is ignored by the launcher).
+x-zap-base: &zap_base
+  image: zaproxy/zap-stable:latest
+  restart: unless-stopped
+  env_file:
+    - .env
+  # 6 GiB cgroup with -Xmx3500m sits at ~57% — leaves ~2.5 GiB for
+  # non-heap (metaspace + JIT cache + thread stacks + session-DB
+  # page cache).  See docs/architecture/zap-resource-tuning.md.
+  mem_limit: 6g
+  memswap_limit: 6g
+  command:
+    - zap.sh
+    - -Xmx3500m
+    - -daemon
+    - -host
+    - 0.0.0.0
+    - -port
+    - "8090"
+    - -config
+    - api.addrs.addr.name=.*
+    - -config
+    - api.addrs.addr.regex=true
+    - -config
+    - api.key=${ZAP_API_KEY}
+  networks:
+    - zynksec-scan
+    - zynksec-targets
+  healthcheck:
+    test:
+      - CMD-SHELL
+      - 'curl -fsS "http://localhost:8090/JSON/core/view/version/?apikey=$$ZAP_API_KEY" >/dev/null'
+    interval: 5s
+    timeout: 3s
+    retries: 20
+    start_period: 60s
+
+# ---------- shared worker service config ----------
+# worker1 + worker2 share image + dependencies + networks; each
+# differs ONLY in WORKER_ZAP_INDEX, ZAP_API_URL, and the Celery
+# queue it subscribes to.  Each worker keeps ``--concurrency=1`` so
+# the single-instance-ZAP contract is preserved per pair.
+x-worker-base: &worker_base
+  build:
+    context: .
+    dockerfile: infra/docker/worker.Dockerfile
+  image: zynksec/worker:dev
+  restart: unless-stopped
+  env_file:
+    - .env
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  networks:
+    - zynksec-core
+    - zynksec-scan
 
 services:
   postgres:
@@ -81,97 +155,69 @@ services:
       retries: 6
       start_period: 30s
 
-  worker:
-    build:
-      context: .
-      dockerfile: infra/docker/worker.Dockerfile
-    image: zynksec/worker:dev
-    container_name: zynksec-worker
-    restart: unless-stopped
-    env_file:
-      - .env
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    # Worker bridges core (Celery broker + Postgres) and scan (ZAP).
-    # It MUST NOT touch zynksec-targets directly — docs/04 §0.6 +
-    # CLAUDE.md §5.  Verify isolation:
-    #   docker compose exec worker getent hosts juice-shop
-    # should return no output (worker shares no network with juice-shop).
-    networks:
-      - zynksec-core
-      - zynksec-scan
+  # ---------- ZAP fan-out: zap1 + zap2 ----------
+  # Two identical ZAP instances sharing &zap_base.  Each pairs 1:1 with
+  # a worker (worker1 ↔ zap1, worker2 ↔ zap2) so the single-instance
+  # ZAP contract — one in-flight scan per ZAP daemon — is preserved
+  # within each pair.  Parallelism comes from running both pairs.
+  #
+  # ``ZAP_INSTANCE_COUNT`` in .env is the source of truth for how many
+  # pairs exist; the API uses it to round-robin children across queues.
+  # Adding a third pair is a 4-block edit here (zap3 + worker3) plus
+  # bumping the env var — no code changes anywhere else.
+  #
+  # Memory sizing background lives in
+  # docs/architecture/zap-resource-tuning.md and the &zap_base comment
+  # block above.  Two ZAPs at 6 GiB each = 12 GiB total cgroup ceiling;
+  # Docker Desktop default VM is 8 GiB so devs running multi-instance
+  # locally need to bump VM memory to ≥14 GiB (see README §dev-setup).
+  zap1:
+    <<: *zap_base
+    container_name: zynksec-zap1
 
-  zap:
-    image: zaproxy/zap-stable:latest
-    container_name: zynksec-zap
-    restart: unless-stopped
-    env_file:
-      - .env
-    # Cap ZAP's container memory.  Without this, ZAP under load could
-    # grow past the Docker Desktop VM's 8.2 GiB ceiling and be killed
-    # by the host kernel's global OOM killer (constraint=CONSTRAINT_
-    # NONE in dmesg).  Because that kill is global-VM rather than
-    # cgroup-scoped, Docker surfaces it as a clean bash exit
-    # (ExitCode=0, OOMKilled=false), making the failure mode invisible.
-    #
-    # 6 GiB sized for AGGRESSIVE (Phase 1 Sprint 3): HIGH attack
-    # strength + every scanner enabled + LOW alert threshold + 4
-    # threads/host runs the JVM heap up against ``-Xmx3500m`` and
-    # accumulates ~1.5-2.0 GiB of non-heap RSS on uninterrupted runs
-    # (metaspace + JIT cache + thread stacks + ZAP's session-DB page
-    # cache).  Empirically a clean AGGRESSIVE run on a thin subpath
-    # peaked at ~5.1 GiB total RSS — 5 GiB was right at the cap, so
-    # 6 GiB now gives the documented 30 % non-heap headroom (3500m /
-    # 6144 ≈ 57 %, well inside the 60-70 % rule of thumb).  See
-    # docs/architecture/zap-resource-tuning.md for the full heap-vs-
-    # cgroup math.
-    #
-    # Note: zaproxy/zap-stable runs bash as PID 1 with java as a child,
-    # so cgroup OOMs of the JVM do NOT set docker inspect's OOMKilled
-    # flag (it tracks PID 1 only).  Use `dmesg | grep CONSTRAINT_MEMCG`
-    # or worker-side ConnectError + RestartCount increments as the
-    # diagnostic signal.  zap.sh's CLI parser DOES respect a user-
-    # supplied ``-Xmx*`` arg though — it's the only override mechanism
-    # that survives both the in-script auto-sizing and the hardcoded
-    # ``-Xmx1959m`` line, which is why it's part of ``command:`` below.
-    mem_limit: 6g
-    memswap_limit: 6g
-    # ZAP is NOT host-published.  Only the worker reaches the ZAP
-    # JSON API on :8090 via zynksec-scan; ZAP reaches targets via
-    # zynksec-targets (docs/04 §0.6 + CLAUDE.md §17).
+  zap2:
+    <<: *zap_base
+    container_name: zynksec-zap2
+
+  # ---------- Worker fan-out: worker1 + worker2 ----------
+  # Each worker subscribes to exactly ONE Celery queue (``zap_q_{i}``)
+  # and points at exactly ONE ZAP daemon (``zap{i}:8090``).  The Celery
+  # ``--concurrency=1`` default is preserved (no override) so a worker
+  # never tries to drive its paired ZAP with two scans at once —
+  # CLAUDE.md §3 single-responsibility / single-instance-ZAP contract.
+  #
+  # Worker bridges core (broker + Postgres) and scan (ZAP).  It MUST
+  # NOT touch zynksec-targets directly — docs/04 §0.6 + CLAUDE.md §5.
+  # Verify isolation:
+  #   docker compose exec worker1 getent hosts juice-shop
+  # should return no output (worker shares no network with juice-shop).
+  worker1:
+    <<: *worker_base
+    container_name: zynksec-worker1
+    environment:
+      WORKER_ZAP_INDEX: "1"
+      ZAP_API_URL: "http://zap1:8090"
     command:
-      - zap.sh
-      # JVM max heap.  zap.sh's CLI parser checks ``$@`` for any
-      # ``-Xmx*`` arg and uses it as JMEM, overriding both the
-      # auto-sized ``MEM/4`` heuristic and the hardcoded -Xmx1959m
-      # line.  3500m sits at ~70% of the 5g cgroup (see comment block
-      # above + docs/architecture/zap-resource-tuning.md).
-      - -Xmx3500m
-      - -daemon
-      - -host
-      - 0.0.0.0
-      - -port
-      - "8090"
-      - -config
-      - api.addrs.addr.name=.*
-      - -config
-      - api.addrs.addr.regex=true
-      - -config
-      - api.key=${ZAP_API_KEY}
-    networks:
-      - zynksec-scan
-      - zynksec-targets
-    healthcheck:
-      test:
-        - CMD-SHELL
-        - 'curl -fsS "http://localhost:8090/JSON/core/view/version/?apikey=$$ZAP_API_KEY" >/dev/null'
-      interval: 5s
-      timeout: 3s
-      retries: 20
-      start_period: 60s
+      - celery
+      - -A
+      - zynksec_worker.celery_app
+      - worker
+      - --loglevel=INFO
+      - --queues=zap_q_1
+
+  worker2:
+    <<: *worker_base
+    container_name: zynksec-worker2
+    environment:
+      WORKER_ZAP_INDEX: "2"
+      ZAP_API_URL: "http://zap2:8090"
+    command:
+      - celery
+      - -A
+      - zynksec_worker.celery_app
+      - worker
+      - --loglevel=INFO
+      - --queues=zap_q_2
 
   mailpit:
     image: axllent/mailpit:latest

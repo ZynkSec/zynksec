@@ -159,11 +159,11 @@ jobs:
             -f target-lab/compose-targets.yml \
             -f tests/integration/docker-compose.test.yml \
             --profile dev --profile lab \
-            up -d postgres redis worker api mailpit zap juice-shop
+            up -d postgres redis worker1 worker2 api mailpit zap1 zap2 juice-shop
       - name: Wait for ZAP + juice-shop to report healthy
         run: |
           set -euo pipefail
-          for svc in zynksec-zap zynksec-juice-shop; do
+          for svc in zynksec-zap1 zynksec-zap2 zynksec-juice-shop; do
             echo "waiting for $svc..."
             for _ in $(seq 1 90); do
               status=$(docker inspect --format='{{.State.Health.Status}}' "$svc" 2>/dev/null || echo unknown)

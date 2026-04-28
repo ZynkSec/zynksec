@@ -8,7 +8,7 @@
 #   docker compose \
 #     -f docker-compose.yml \
 #     -f tests/integration/docker-compose.test.yml \
-#     --profile dev up -d postgres redis worker api mailpit
+#     --profile dev up -d postgres redis worker1 worker2 api mailpit zap1 zap2
 
 services:
   postgres:
