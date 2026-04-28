@@ -73,6 +73,7 @@ def _scan_to_read(scan: Scan, findings: list[object]) -> ScanRead:
         project_id=scan.project_id,
         target_url=scan.target_url,
         target=target_summary,
+        scan_group_id=scan.scan_group_id,
         scan_profile=ScanProfile(scan.scan_profile),
         status=scan.status,  # type: ignore[arg-type]
         started_at=scan.started_at,
