@@ -11,12 +11,14 @@ from __future__ import annotations
 import uuid
 from typing import Annotated
 
+import sqlalchemy as sa
 from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session
 from zynksec_db import FindingRepository, Scan, ScanRepository, TargetRepository
-from zynksec_schema import ScanProfile
+from zynksec_schema import ScanProfile, zap_queue_for_index
 
-from zynksec_api.celery_client import enqueue_scan
+from zynksec_api.celery_client import enqueue_scan_to_queue
+from zynksec_api.config import get_settings
 from zynksec_api.db import get_session
 from zynksec_api.exceptions import ScanNotFound, ScanTargetSpecConflict, TargetNotFound
 from zynksec_api.routers._project_resolution import resolve_project_for_request
@@ -140,22 +142,57 @@ def create_scan(
         project_id = project.id
         target_url_value = str(body.target_url)
 
+    # Phase 2 Sprint 3: pick the per-pair queue BEFORE the insert so
+    # the row carries its ``assigned_queue`` from the very first
+    # commit — no second UPDATE.  Rotation cursor is "row count
+    # modulo N", computed inside the same transaction so two
+    # concurrent POSTs see consistent neighbours and tend to
+    # alternate (Postgres serializable isolation isn't required;
+    # MVCC + the count's commit-ordering settle it correctly enough
+    # for the legacy path's "approximately fair" guarantee).
+    instance_index = _next_instance_index(session)
+    queue = zap_queue_for_index(instance_index)
+
     scan = Scan(
         project_id=project_id,
         target_url=target_url_value,
         target_id=target_id_persisted,
         scan_profile=body.scan_profile.value,
         status="queued",
+        assigned_queue=queue,
     )
     repo.add(session, scan)
     session.commit()
 
-    # Celery args stay primitive (CLAUDE.md §5) — the URL we just
-    # resolved is a plain string regardless of which input path was
-    # taken, so the worker contract doesn't change in this sprint.
-    enqueue_scan(str(scan.id), body.scan_profile.value)
+    # Celery args stay primitive (CLAUDE.md §5).  The queue we just
+    # picked routes the task to the worker pinned to the matching
+    # ZAP instance.
+    enqueue_scan_to_queue(str(scan.id), body.scan_profile.value, queue=queue)
     # Freshly queued scans have no findings yet.
     return _scan_to_read(scan, findings=[])
+
+
+def _next_instance_index(session: Session) -> int:
+    """Pick the 1-based ZAP instance index for a legacy single-scan POST.
+
+    Uses ``COUNT(*) FROM scans`` modulo ``ZAP_INSTANCE_COUNT`` as a
+    restart-safe rotation cursor — no extra table, no Redis counter.
+    The "+ 1" makes it 1-based to match ``zap_queue_for_index``.
+    Race-tolerant: if two POSTs read the same count and pick the
+    same queue, the worst case is one queue gets two scans in a
+    row instead of perfectly alternating.  Acceptable for the
+    legacy path; ScanGroups get strict round-robin in
+    :mod:`zynksec_api.routers.scan_groups`.
+
+    Caveat: changing ``ZAP_INSTANCE_COUNT`` between scans causes a
+    brief skew (the modulo class shifts) — documented in
+    ``docs/04_phase0_scaffolding.md``.  Bumping requires the matching
+    compose edit anyway.
+    """
+    settings = get_settings()
+    n = settings.zap_instance_count
+    count = int(session.execute(sa.select(sa.func.count(Scan.id))).scalar_one() or 0)
+    return (count % n) + 1
 
 
 @router.get(

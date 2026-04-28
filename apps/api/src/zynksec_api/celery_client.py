@@ -9,6 +9,14 @@ from the DB.  Week-4 observability adds correlation tracing via
 Celery's first-class ``headers`` channel (which is separate from args
 — metadata, not payload) so a request's correlation_id survives the
 Redis-broker hop into the worker process.
+
+Phase 2 Sprint 3: queue routing is now per-call.  Each ZAP+worker
+pair owns its own queue (``zap_q_1`` / ``zap_q_2`` / ...) and the
+caller decides which queue a scan lands on.  ScanGroup children are
+dispatched round-robin across queues; legacy single-scan POSTs use
+a rotation cursor.  No more ``scan_group.process`` umbrella task —
+each child Scan is its own ``scan.run`` and rolls up the parent
+group atomically when it terminates.
 """
 
 from __future__ import annotations
@@ -27,12 +35,15 @@ def get_celery_client() -> Celery:
 
     settings = get_settings()
     app = Celery("zynksec-api-client", broker=settings.celery_broker_url)
-    # Match the worker's serialization/queue config so tasks route
-    # and decode correctly.
+    # Match the worker's serialization config so payloads decode
+    # correctly.  ``task_default_queue`` is intentionally NOT set —
+    # every send_task call below specifies an explicit per-pair queue
+    # so a missing default is the right safety: a regression that
+    # forgets to route would surface as a Celery error rather than
+    # silently land on a queue no worker consumes from.
     app.conf.update(
         task_serializer="json",
         accept_content=["json"],
-        task_default_queue="scans",
     )
     return app
 
@@ -46,18 +57,26 @@ def _current_correlation_id() -> str | None:
     return None
 
 
-def enqueue_scan(scan_id: str, scan_profile: str) -> None:
-    """Send the ``scan.run`` task with primitive arguments.
+def enqueue_scan_to_queue(scan_id: str, scan_profile: str, queue: str) -> None:
+    """Send the ``scan.run`` task for ``scan_id`` to a specific queue.
 
-    ``scan_profile`` is the enum's wire form (``"PASSIVE"``, ...) — the
-    worker reconstructs the :class:`ScanProfile` inside the task body
-    so the Celery payload stays primitive (CLAUDE.md §5).
+    ``queue`` selects which ZAP+worker pair runs this scan — one of
+    ``zap_q_1`` / ``zap_q_2`` / ... up to ``ZAP_INSTANCE_COUNT``.
+    The router computes the queue name from
+    :func:`zynksec_schema.zap_queue_for_index` (round-robin for
+    ScanGroup children, rotation cursor for legacy single-scan
+    POSTs) and persists it on the Scan row's ``assigned_queue``
+    field for auditing.
 
-    Also passes the current request's ``correlation_id`` as a kwarg
-    (docs/04 Week-4 observability).  Celery's ``headers=`` channel
-    looked like the cleaner home for it architecturally, but custom
-    headers don't round-trip reliably through the Redis broker under
-    task protocol v2; kwargs do, and keep the wiring straightforward.
+    ``scan_profile`` is the enum's wire form (``"PASSIVE"``, ...) —
+    the worker reconstructs the :class:`ScanProfile` inside the
+    task body so the Celery payload stays primitive (CLAUDE.md §5).
+
+    ``correlation_id`` propagates as a kwarg, same path as before:
+    Celery's ``headers=`` channel doesn't round-trip reliably through
+    Redis under task protocol v2; kwargs do, and keep the wiring
+    straightforward.  The worker's ``task_prerun`` signal binds it
+    to structlog contextvars on receipt.
     """
     kwargs: dict[str, str] = {"scan_profile": scan_profile}
     correlation_id = _current_correlation_id()
@@ -67,31 +86,5 @@ def enqueue_scan(scan_id: str, scan_profile: str) -> None:
         "scan.run",
         args=[scan_id],
         kwargs=kwargs,
-        queue="scans",
-    )
-
-
-def enqueue_scan_group(scan_group_id: str) -> None:
-    """Send the ``scan_group.process`` task — Phase 2 Sprint 2.
-
-    Just the group's id crosses the wire (CLAUDE.md §5 — primitives
-    only).  The worker re-fetches the group + its children from the
-    DB and iterates in deterministic order.  Per-child
-    ``scan_profile`` is read from each child Scan row, so the group
-    payload stays minimal.
-
-    ``correlation_id`` propagates the same way as ``enqueue_scan``;
-    the worker's ``task_prerun`` signal binds it to structlog
-    contextvars so every log line for this group (and every child
-    execution it triggers) carries the originating request's id.
-    """
-    kwargs: dict[str, str] = {}
-    correlation_id = _current_correlation_id()
-    if correlation_id is not None:
-        kwargs["correlation_id"] = correlation_id
-    get_celery_client().send_task(
-        "scan_group.process",
-        args=[scan_group_id],
-        kwargs=kwargs,
-        queue="scans",
+        queue=queue,
     )

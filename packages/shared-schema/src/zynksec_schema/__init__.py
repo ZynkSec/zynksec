@@ -19,6 +19,7 @@ from zynksec_schema.finding import (
     Taxonomy,
 )
 from zynksec_schema.fingerprint import compute_fingerprint, normalize_url
+from zynksec_schema.queues import zap_queue_for_index
 from zynksec_schema.scan_profile import ScanProfile
 
 __version__ = "0.0.0"
@@ -38,4 +39,5 @@ __all__ = [
     "__version__",
     "compute_fingerprint",
     "normalize_url",
+    "zap_queue_for_index",
 ]
