@@ -30,6 +30,7 @@ from zynksec_db import (
     make_session_factory,
 )
 from zynksec_scanners import ScannerPlugin, ScanTarget
+from zynksec_scanners.types import TargetKind
 from zynksec_schema import Finding, ScanProfile
 
 from zynksec_worker.config import get_settings
@@ -53,13 +54,23 @@ def _load_target(
     scan_uuid: uuid.UUID,
     scan_profile: ScanProfile,
 ) -> ScanTarget:
-    """Load the Scan row and construct a :class:`ScanTarget` for the plugin."""
+    """Load the Scan row and construct a :class:`ScanTarget` for the plugin.
+
+    When the Scan links to a persistent :class:`zynksec_db.Target`
+    (Phase 2 Sprint 1+), the target's ``kind`` flows through to the
+    runtime ``ScanTarget`` so the plugin's ``supports()`` gate can
+    reject unsupported kinds.  Legacy ``target_url``-only scans
+    (``scan.target_id IS NULL``) keep the historical ``"web_app"``
+    default — that path has no kind information to thread through.
+    """
     with factory() as session:
         scan = session.get(Scan, scan_uuid)
         if scan is None:
             raise RuntimeError(f"Scan {scan_uuid} vanished between enqueue and dispatch")
+        target_row = scan.target  # eager-loaded via SQLAlchemy relationship
+        kind: TargetKind = target_row.kind if target_row is not None else "web_app"  # type: ignore[assignment]
         return ScanTarget(
-            kind="web_app",
+            kind=kind,
             url=scan.target_url,
             project_id=scan.project_id,
             scan_id=scan.id,
