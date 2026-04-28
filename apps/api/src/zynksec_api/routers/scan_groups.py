@@ -41,7 +41,6 @@ from zynksec_db import (
     ScanGroupRepository,
     ScanRepository,
     Target,
-    TargetRepository,
 )
 from zynksec_schema import ScanProfile
 
@@ -68,15 +67,9 @@ def get_scan_repository() -> ScanRepository:
     return ScanRepository()
 
 
-def get_target_repository() -> TargetRepository:
-    """FastAPI dependency — returns a fresh :class:`TargetRepository`."""
-    return TargetRepository()
-
-
 SessionDep = Annotated[Session, Depends(get_session)]
 ScanGroupRepoDep = Annotated[ScanGroupRepository, Depends(get_scan_group_repository)]
 ScanRepoDep = Annotated[ScanRepository, Depends(get_scan_repository)]
-TargetRepoDep = Annotated[TargetRepository, Depends(get_target_repository)]
 
 
 def _children_summary_and_ids(
@@ -179,7 +172,6 @@ def create_scan_group(
     session: SessionDep,
     group_repo: ScanGroupRepoDep,
     scan_repo: ScanRepoDep,
-    target_repo: TargetRepoDep,
 ) -> ScanGroupRead:
     """Persist parent ScanGroup + N child Scan rows + enqueue worker.
 
@@ -194,8 +186,12 @@ def create_scan_group(
     the resolved group; cross-project membership is rejected as
     ``unknown_target_ids`` because, from the resolved project's
     point of view, those ids effectively don't exist.
+
+    Targets are loaded inline via a single bulk
+    ``SELECT ... WHERE id IN (...)`` query in :func:`_load_targets_or_422`
+    rather than going through ``TargetRepository`` — pushing the bulk
+    fetch into the repo is a separate follow-up.
     """
-    del target_repo  # Currently unused — Targets are loaded directly via session.
     _validate_target_ids(body.target_ids)
     project = resolve_project_for_request(session, body.project_id)
 
