@@ -131,19 +131,27 @@ def execute_scan(scan_uuid: uuid.UUID, profile: ScanProfile) -> bool:
     """Run one scan against one target end-to-end.
 
     Returns ``True`` if the scan completed (with or without
-    findings), ``False`` if it failed (DB row is already marked
-    ``failed`` and the failure has been logged).  Never raises —
-    the caller decides whether to propagate.
+    findings), ``False`` if it failed during the plugin's
+    prepare/run/normalize/persist phase (DB row marked ``failed``
+    and the failure logged via ``scan.run.failed``).
 
-    Single-scan task callers (``scan.run``) should re-raise on
-    ``False`` so Celery records the task as failed; group-task
-    callers (``scan_group.process``) should continue to the next
-    child.
+    May raise from the early-boundary calls — ``_mark(factory,
+    "running", ...)``, ``_load_target(...)``, or
+    ``build_zap_plugin(settings)`` — when DB connectivity or
+    settings load fail before the inner ``try/except`` is reached.
+    The caller decides what to do with those:
+
+    * ``scan.run`` lets the exception propagate so Celery records
+      a failed task (retry / DLQ wiring lives there).
+    * ``scan_group.process`` wraps the call in defense-in-depth
+      ``try/except`` so a transient blip on one child doesn't
+      abort the whole group.
 
     The Scan's ``scan_id`` is bound to structlog contextvars at
     entry so every log line emitted while this child runs (the
     plugin progress lines, finding-persist lines, status
-    transitions) carries it; the bound vars are cleared on exit
+    transitions) carries it; the bound var is cleared in
+    ``finally`` — including on the propagating-exception path —
     so a subsequent child in the same task doesn't inherit a
     stale id.
     """

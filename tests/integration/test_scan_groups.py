@@ -20,9 +20,9 @@ import uuid
 
 import httpx
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
-from zynksec_db import Scan, ScanGroup
+from zynksec_db import Finding, Project, Scan, ScanGroup
 
 # Same poll budget pattern as other integration tests.  Each
 # child runs PASSIVE on a juice-shop subpath so total wall-clock
@@ -118,6 +118,14 @@ def test_scan_group_two_target_passive_round_trip(
     assert len(children) == 2
     assert all(str(c.scan_group_id) == group_id for c in children)
 
+    # API-level: GET /api/v1/scans/{child_id} surfaces the parent
+    # ``scan_group_id`` so a client following ``child_scan_ids`` can
+    # see the link both ways (Sprint-2 added the field to ScanRead).
+    a_child_id = posted["child_scan_ids"][0]
+    child_response = api_client.get(f"/api/v1/scans/{a_child_id}")
+    assert child_response.status_code == 200, child_response.text
+    assert child_response.json()["scan_group_id"] == group_id
+
 
 def test_scan_group_with_unknown_target_id_returns_canonical_422_atomically(
     api_client: httpx.Client,
@@ -126,9 +134,15 @@ def test_scan_group_with_unknown_target_id_returns_canonical_422_atomically(
     """Unknown target_id → 422 ``unknown_target_ids``, NO rows created."""
     valid = _create_target(api_client)
     bogus = str(uuid.uuid4())
+    valid_uuid = uuid.UUID(valid["id"])
 
     pre_groups = db_session.execute(select(ScanGroup)).scalars().all()
-    pre_count = len(pre_groups)
+    pre_group_count = len(pre_groups)
+    # Scoped to the GOOD target_id so this delta isn't muddied by
+    # scans created in other tests against juice-shop's bare URL.
+    pre_scan_count = db_session.execute(
+        select(func.count()).select_from(Scan).where(Scan.target_id == valid_uuid)
+    ).scalar_one()
 
     response = api_client.post(
         "/api/v1/scan-groups",
@@ -140,11 +154,76 @@ def test_scan_group_with_unknown_target_id_returns_canonical_422_atomically(
     assert bogus in body["details"]["unknown_target_ids"]
     assert body["request_id"]
 
-    # Atomicity: no group created, no orphan children with the
-    # valid target_id either.
+    # Atomicity: no group created AND no orphan child Scan rows
+    # with the GOOD target_id slipped through either.  Scope the
+    # Scan delta to the specific target_id used here so concurrent
+    # fixture activity (other tests' scans against juice-shop)
+    # can't perturb the assertion.
     db_session.expire_all()
     post_groups = db_session.execute(select(ScanGroup)).scalars().all()
-    assert len(post_groups) == pre_count
+    assert len(post_groups) == pre_group_count
+    post_scan_count = db_session.execute(
+        select(func.count()).select_from(Scan).where(Scan.target_id == valid_uuid)
+    ).scalar_one()
+    assert post_scan_count == pre_scan_count
+
+
+def test_scan_group_with_cross_project_target_id_returns_canonical_422(
+    api_client: httpx.Client,
+    db_session: Session,
+) -> None:
+    """Target lives in project A; POST /scan-groups names project B
+    referencing it → 422 ``unknown_target_ids`` (same code AND same
+    message string as the truly-missing case so existence doesn't
+    leak across project boundaries).  No ScanGroup row created.
+
+    No HTTP endpoint creates Projects directly today (Phase 0 only
+    has the implicit Local Dev project), so this test inserts the
+    two project rows via ``db_session`` to exercise the cross-
+    project branch in ``create_scan_group``.
+    """
+    project_a = Project(name=f"sg-cross-A-{uuid.uuid4().hex[:8]}")
+    project_b = Project(name=f"sg-cross-B-{uuid.uuid4().hex[:8]}")
+    db_session.add_all([project_a, project_b])
+    db_session.commit()
+
+    # Target lives in project A.
+    target_a_response = api_client.post(
+        "/api/v1/targets",
+        json={
+            "name": f"sg-cross-target-{uuid.uuid4().hex[:8]}",
+            "url": "http://juice-shop:3000/",
+            "project_id": str(project_a.id),
+        },
+    )
+    assert target_a_response.status_code == 201, target_a_response.text
+    target_a = target_a_response.json()
+
+    pre_groups = db_session.execute(select(ScanGroup)).scalars().all()
+    pre_group_count = len(pre_groups)
+
+    # POST scan-group from project B referencing project A's target.
+    response = api_client.post(
+        "/api/v1/scan-groups",
+        json={
+            "target_ids": [target_a["id"]],
+            "project_id": str(project_b.id),
+            "scan_profile": "PASSIVE",
+        },
+    )
+    assert response.status_code == 422, response.text
+    body = response.json()
+    assert body["code"] == "unknown_target_ids"
+    # Existence MUST NOT leak: the message string is identical to the
+    # truly-missing case so a client can't tell them apart.
+    assert body["message"] == "one or more target_ids do not exist in this project"
+    assert target_a["id"] in body["details"]["unknown_target_ids"]
+    assert body["request_id"]
+
+    # Atomicity: no ScanGroup row created.
+    db_session.expire_all()
+    post_groups = db_session.execute(select(ScanGroup)).scalars().all()
+    assert len(post_groups) == pre_group_count
 
 
 def test_scan_group_with_duplicate_target_ids_returns_canonical_422(
@@ -224,5 +303,18 @@ def test_scan_group_partial_failure_when_one_child_target_kind_unsupported(
         .all()
     )
     by_target = {c.target_id: c for c in children}
-    assert by_target[uuid.UUID(web["id"])].status == "completed"
+    surviving_child = by_target[uuid.UUID(web["id"])]
+    assert surviving_child.status == "completed"
     assert by_target[uuid.UUID(repo["id"])].status == "failed"
+
+    # The whole point of partial_failure: the surviving child still
+    # produced real findings.  Without this assertion the test would
+    # pass even if the worker silently lost findings on the success
+    # path.
+    surviving_finding_count = db_session.execute(
+        select(func.count()).select_from(Finding).where(Finding.scan_id == surviving_child.id)
+    ).scalar_one()
+    assert surviving_finding_count > 0, (
+        f"surviving child {surviving_child.id} has 0 findings; "
+        "expected at least one from PASSIVE on the juice-shop SQLi subpath"
+    )

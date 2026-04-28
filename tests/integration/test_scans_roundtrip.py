@@ -73,6 +73,9 @@ def test_post_scan_leaves_queued_once_worker_picks_up(
     body = _poll_until_off_queued(api_client, scan_id)
     assert body["status"] in {"running", "completed", "failed"}
     assert body["scan_profile"] == "PASSIVE"
+    # Phase 2 Sprint 2: legacy single-target scans don't belong to
+    # any ScanGroup, so the response field is present and ``None``.
+    assert body["scan_group_id"] is None
 
     # Direct DB check — catches API/DB drift.
     stmt = select(Scan).where(Scan.id == uuid.UUID(scan_id))

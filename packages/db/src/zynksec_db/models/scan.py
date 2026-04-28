@@ -59,11 +59,15 @@ class Scan(Base):
     # cleanly.  ``lazy="select"`` (default) since GET /scans/{id}
     # responses don't embed the parent group; clients that want it
     # GET /scan-groups/{id} explicitly.
+    #
+    # NB: the ``ix_scans_scan_group_id`` index is created in the
+    # 0004 Alembic migration — that migration is the source of truth
+    # for index management, so we don't redundantly declare
+    # ``index=True`` here.
     scan_group_id: Mapped[uuid.UUID | None] = mapped_column(
         PG_UUID(as_uuid=True),
         ForeignKey("scan_groups.id", ondelete="CASCADE"),
         nullable=True,
-        index=True,
     )
     scan_group: Mapped[ScanGroup | None] = relationship("ScanGroup")
     # Stored as a free-form short string rather than a Postgres ENUM so

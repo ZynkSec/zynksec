@@ -156,9 +156,13 @@ def process(
                 # this is defense in depth for anything escaping the
                 # helper (e.g. SQLAlchemy connection errors during
                 # the status-mark write).
+                # ``scan_group_id`` is already in contextvars (bound at
+                # task entry) so the merge processor adds it to every
+                # line; only ``scan_id`` needs an explicit kwarg here
+                # because ``execute_scan``'s ``finally`` already
+                # unbound it before the exception propagated up.
                 _log.exception(
                     "scan_group.child.unexpected_error",
-                    scan_group_id=scan_group_id,
                     scan_id=str(child_id),
                     error=str(exc),
                 )

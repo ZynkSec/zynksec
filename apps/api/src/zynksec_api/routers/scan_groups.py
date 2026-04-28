@@ -11,7 +11,7 @@ request.  The handler:
     2. Persists the parent ScanGroup + N child Scan rows in a
        single transaction so the atomicity invariant holds: a
        caller that gets a 4xx never sees orphaned children.
-    3. Enqueues one ``process_scan_group`` Celery task carrying
+    3. Enqueues one ``scan_group.process`` Celery task carrying
        just the group's id.  The worker picks it up, marks
        running, and iterates children serially (Sprint-2
        constraint: worker concurrency stays at 1).
@@ -154,7 +154,7 @@ def _load_targets_or_422(
     unknown = [tid for tid in target_ids if tid not in found_by_id]
     if unknown:
         raise UnknownTargetIds(
-            f"{len(unknown)} target_id(s) do not exist",
+            "one or more target_ids do not exist in this project",
             details={"unknown_target_ids": [str(tid) for tid in unknown]},
         )
     # Preserve request order — matters for child creation order.
@@ -198,8 +198,13 @@ def create_scan_group(
     targets = _load_targets_or_422(session, body.target_ids)
     cross_project = [t for t in targets if t.project_id != project.id]
     if cross_project:
+        # Same message string + same code as the truly-missing case so a
+        # client can't distinguish "target doesn't exist anywhere" from
+        # "target exists in a different project" by string-matching the
+        # response body — that distinction would leak existence under
+        # multi-tenant auth (Phase 1+).
         raise UnknownTargetIds(
-            f"{len(cross_project)} target_id(s) belong to a different project",
+            "one or more target_ids do not exist in this project",
             details={"unknown_target_ids": [str(t.id) for t in cross_project]},
         )
 
