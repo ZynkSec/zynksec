@@ -13,6 +13,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from zynksec_db.base import Base
 
 if TYPE_CHECKING:
+    from zynksec_db.models.scan_group import ScanGroup
     from zynksec_db.models.target import Target
 
 
@@ -50,6 +51,25 @@ class Scan(Base):
     # handler reads ``scan.target.url`` immediately after persistence;
     # avoiding a second SELECT keeps the hot path single-query.
     target: Mapped[Target | None] = relationship("Target", lazy="joined")
+    # Phase 2 Sprint 2: optional FK to the parent ScanGroup when this
+    # scan is a child of a multi-target request.  Null for
+    # ``POST /scans`` single-target scans (legacy + Sprint-1 paths).
+    # ``ON DELETE CASCADE`` because a child Scan has no meaning
+    # without its group — deleting the group nukes its children
+    # cleanly.  ``lazy="select"`` (default) since GET /scans/{id}
+    # responses don't embed the parent group; clients that want it
+    # GET /scan-groups/{id} explicitly.
+    #
+    # NB: the ``ix_scans_scan_group_id`` index is created in the
+    # 0004 Alembic migration — that migration is the source of truth
+    # for index management, so we don't redundantly declare
+    # ``index=True`` here.
+    scan_group_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("scan_groups.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    scan_group: Mapped[ScanGroup | None] = relationship("ScanGroup")
     # Stored as a free-form short string rather than a Postgres ENUM so
     # adding profiles in future sprints (Sprint 2: SAFE_ACTIVE,
     # Sprint 3: AGGRESSIVE) doesn't need a Postgres ALTER TYPE — the

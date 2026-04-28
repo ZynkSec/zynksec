@@ -1,8 +1,9 @@
-"""ORM models — Project, Target, Scan, Finding."""
+"""ORM models — Project, Target, ScanGroup, Scan, Finding."""
 
 from zynksec_db.models.finding import Finding
 from zynksec_db.models.project import Project
 from zynksec_db.models.scan import Scan
+from zynksec_db.models.scan_group import ScanGroup
 from zynksec_db.models.target import Target
 
-__all__ = ["Finding", "Project", "Scan", "Target"]
+__all__ = ["Finding", "Project", "Scan", "ScanGroup", "Target"]

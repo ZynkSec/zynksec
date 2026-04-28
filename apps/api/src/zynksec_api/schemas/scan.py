@@ -79,6 +79,11 @@ class ScanRead(BaseModel):
     project_id: uuid.UUID
     target_url: str
     target: TargetSummary | None = None
+    # Phase 2 Sprint 2: when this scan is a child of a multi-target
+    # ScanGroup, ``scan_group_id`` references the parent.  ``None``
+    # for single-target scans created via ``POST /api/v1/scans``
+    # (legacy and Sprint-1 paths).
+    scan_group_id: uuid.UUID | None = None
     scan_profile: ScanProfile
     status: ScanStatus
     started_at: datetime | None = None

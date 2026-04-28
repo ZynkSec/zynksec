@@ -99,3 +99,35 @@ class ScanTargetSpecConflict(ZynksecError):  # noqa: N818 — HTTPException-styl
 
     code = "scan_target_spec_conflict"
     http_status = status.HTTP_422_UNPROCESSABLE_ENTITY
+
+
+class ScanGroupNotFound(ZynksecError):  # noqa: N818 — HTTPException-style
+    """404 — no scan_group row with the given id."""
+
+    code = "scan_group_not_found"
+    http_status = status.HTTP_404_NOT_FOUND
+
+
+class UnknownTargetIds(ZynksecError):  # noqa: N818 — HTTPException-style
+    """422 — POST /scan-groups names target_id(s) that don't exist.
+
+    All-or-nothing: the API rejects the whole request and rolls back
+    rather than creating a partial group.  ``details.unknown_target_ids``
+    lists the ids that didn't resolve so the caller can pinpoint
+    them without diffing.
+    """
+
+    code = "unknown_target_ids"
+    http_status = status.HTTP_422_UNPROCESSABLE_ENTITY
+
+
+class DuplicateTargetIds(ZynksecError):  # noqa: N818 — HTTPException-style
+    """422 — POST /scan-groups with the same target_id listed twice.
+
+    The check lives at the router so the canonical envelope holds;
+    Pydantic's container types don't enforce uniqueness on their
+    own.  ``details.duplicate_target_ids`` lists each repeated id.
+    """
+
+    code = "duplicate_target_ids"
+    http_status = status.HTTP_422_UNPROCESSABLE_ENTITY

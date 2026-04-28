@@ -69,3 +69,29 @@ def enqueue_scan(scan_id: str, scan_profile: str) -> None:
         kwargs=kwargs,
         queue="scans",
     )
+
+
+def enqueue_scan_group(scan_group_id: str) -> None:
+    """Send the ``scan_group.process`` task — Phase 2 Sprint 2.
+
+    Just the group's id crosses the wire (CLAUDE.md §5 — primitives
+    only).  The worker re-fetches the group + its children from the
+    DB and iterates in deterministic order.  Per-child
+    ``scan_profile`` is read from each child Scan row, so the group
+    payload stays minimal.
+
+    ``correlation_id`` propagates the same way as ``enqueue_scan``;
+    the worker's ``task_prerun`` signal binds it to structlog
+    contextvars so every log line for this group (and every child
+    execution it triggers) carries the originating request's id.
+    """
+    kwargs: dict[str, str] = {}
+    correlation_id = _current_correlation_id()
+    if correlation_id is not None:
+        kwargs["correlation_id"] = correlation_id
+    get_celery_client().send_task(
+        "scan_group.process",
+        args=[scan_group_id],
+        kwargs=kwargs,
+        queue="scans",
+    )
