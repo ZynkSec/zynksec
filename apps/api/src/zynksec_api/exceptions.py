@@ -83,3 +83,19 @@ class TargetHasScans(ZynksecError):  # noqa: N818 — HTTPException-style
 
     code = "target_has_scans"
     http_status = status.HTTP_409_CONFLICT
+
+
+class ScanTargetSpecConflict(ZynksecError):  # noqa: N818 — HTTPException-style
+    """422 — POST /scans with both or neither of ``target_id``/``target_url``.
+
+    The XOR check lives at the router (rather than as a Pydantic
+    ``model_validator``) so callers get the canonical envelope
+    instead of FastAPI's default ``{"detail": [...]}`` shape.
+    Pydantic's per-field validation (``HttpUrl`` for ``target_url``,
+    ``uuid.UUID`` for ``target_id``) still emits the standard 422
+    shape — that's the known
+    ``RequestValidationError`` gap, not changed in this sprint.
+    """
+
+    code = "scan_target_spec_conflict"
+    http_status = status.HTTP_422_UNPROCESSABLE_ENTITY

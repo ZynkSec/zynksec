@@ -21,19 +21,37 @@ ScanStatus = Literal["queued", "running", "completed", "failed"]
 class ScanCreate(BaseModel):
     """Body of ``POST /api/v1/scans``.
 
+    Exactly one of ``target_id`` or ``target_url`` must be provided
+    — the router enforces this and surfaces both/neither as a
+    canonical-envelope 422 (``scan_target_spec_conflict``).  Pydantic
+    keeps both fields optional at the schema layer so the
+    canonical envelope (rather than the default ``{"detail": [...]}``)
+    is what callers see for the both/neither case.
+
+    ``target_id`` (Phase 2 Sprint 1+) — id of an existing Target
+    resource.  Recommended for new code; the handler resolves the
+    URL + project from the Target row.
+
+    ``target_url`` (legacy, still supported) — POST without ever
+    creating a Target.  ``Scan.target_id`` stays null on these rows.
+    The two paths exist concurrently so existing callers don't break;
+    a future sprint can deprecate ``target_url`` once clients have
+    migrated.
+
     ``project_id`` is optional in Phase 0; if absent, the handler
     looks up / creates the implicit "Local Dev" project (docs/04 §0.16).
+    Ignored when ``target_id`` is given — the project comes from the
+    Target row.
 
     ``scan_profile`` controls engine intensity.  The schema accepts
     every :class:`ScanProfile` value so the OpenAPI spec advertises
-    them as valid for clients planning ahead; the router rejects
-    profiles whose implementations haven't landed yet with a
-    descriptive 422.  Sprint 1 ships ``PASSIVE`` only.
+    them as valid for clients planning ahead.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    target_url: HttpUrl
+    target_id: uuid.UUID | None = None
+    target_url: HttpUrl | None = None
     project_id: uuid.UUID | None = None
     scan_profile: ScanProfile = ScanProfile.PASSIVE
 
