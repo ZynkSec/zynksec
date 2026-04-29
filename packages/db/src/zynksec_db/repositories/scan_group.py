@@ -163,6 +163,10 @@ class ScanGroupRepository(Repository[ScanGroup]):
         # picks the terminal label from the counts: any failed +
         # any completed -> partial_failure; all failed -> failed;
         # all completed -> completed.
+        #
+        # Each branch casts to ``scan_group_status`` because Postgres
+        # treats the bare string literals as ``text`` and refuses
+        # ``text -> ENUM`` auto-cast on the assignment.
         sql = sa.text(
             """
             WITH counts AS (
@@ -177,9 +181,9 @@ class ScanGroupRepository(Repository[ScanGroup]):
             UPDATE scan_groups sg
             SET
                 status = CASE
-                    WHEN c.failed = 0    THEN 'completed'
-                    WHEN c.completed = 0 THEN 'failed'
-                    ELSE                       'partial_failure'
+                    WHEN c.failed = 0    THEN 'completed'::scan_group_status
+                    WHEN c.completed = 0 THEN 'failed'::scan_group_status
+                    ELSE                       'partial_failure'::scan_group_status
                 END,
                 completed_at = now(),
                 updated_at   = now()
