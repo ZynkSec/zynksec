@@ -53,6 +53,23 @@ class ScanNotFound(ZynksecError):  # noqa: N818 — HTTPException-style short na
     http_status = status.HTTP_404_NOT_FOUND
 
 
+class ProjectNotFound(ZynksecError):  # noqa: N818 — HTTPException-style short name
+    """404 — caller supplied a ``project_id`` that doesn't resolve.
+
+    Phase 2 debt-paydown: previously the resolution helper silently
+    fell back to the implicit Local Dev project when a non-existent
+    id was provided.  That conflated "no project requested → defaults
+    apply" (Phase 0 lenience) with "wrong project requested → caller
+    is buggy or auth boundary leaks", and would have returned the
+    wrong tenant's data under multi-tenancy.  We now surface the
+    second case as an explicit 404 so the caller knows their request
+    was rejected, not silently re-routed.
+    """
+
+    code = "project_not_found"
+    http_status = status.HTTP_404_NOT_FOUND
+
+
 class TargetNotFound(ZynksecError):  # noqa: N818 — HTTPException-style short name
     """404 — no target row with the given id."""
 
