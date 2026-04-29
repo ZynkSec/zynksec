@@ -1,0 +1,50 @@
+# CI memory-relief overlay — referenced from .github/workflows/ci.yml's
+# ``-f`` chain.  GitHub's free-tier ``ubuntu-latest`` runner has ~7 GiB
+# RAM; two ZAPs at the canonical 6 GiB cgroup each = 12 GiB notional
+# ceiling, which OOMs under load.  These overrides cap each ZAP at
+# 4 GiB / ``-Xmx2500m`` (the documented floor in
+# docs/architecture/zap-resource-tuning.md) — enough for PASSIVE +
+# SAFE_ACTIVE scans, which is what the integration suite exercises.
+# AGGRESSIVE under load still wants the full 6 GiB and is gated behind
+# ``RUN_AGGRESSIVE_TESTS=1`` (default unset on CI).
+#
+# This file is the CI cousin of the dev-only ``docker-compose.override.yml``
+# (gitignored).  Production / Phase-5 single-VPS deploys use the
+# unmodified 6 GiB caps from ``docker-compose.yml``.
+
+services:
+  zap1:
+    mem_limit: 4g
+    memswap_limit: 4g
+    command:
+      - zap.sh
+      - -Xmx2500m
+      - -daemon
+      - -host
+      - 0.0.0.0
+      - -port
+      - "8090"
+      - -config
+      - api.addrs.addr.name=.*
+      - -config
+      - api.addrs.addr.regex=true
+      - -config
+      - api.key=${ZAP_API_KEY}
+
+  zap2:
+    mem_limit: 4g
+    memswap_limit: 4g
+    command:
+      - zap.sh
+      - -Xmx2500m
+      - -daemon
+      - -host
+      - 0.0.0.0
+      - -port
+      - "8090"
+      - -config
+      - api.addrs.addr.name=.*
+      - -config
+      - api.addrs.addr.regex=true
+      - -config
+      - api.key=${ZAP_API_KEY}
