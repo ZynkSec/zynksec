@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -33,6 +34,38 @@ class TargetRepository(Repository[Target]):
             select(Target).where(Target.project_id == project_id).order_by(Target.created_at.asc())
         )
         return list(session.execute(stmt).scalars().all())
+
+    def bulk_get(
+        self,
+        session: Session,
+        target_ids: Sequence[uuid.UUID],
+        *,
+        project_id: uuid.UUID,
+    ) -> list[Target]:
+        """Fetch Targets by id, scoped to a single project, preserving input order.
+
+        Used by ``POST /api/v1/scan-groups`` to load the request's
+        target_ids in one round-trip.  ``project_id`` is REQUIRED:
+        Sprint 2 polish committed to rejecting cross-project ids as
+        ``unknown_target_ids`` (same envelope as truly-missing) so a
+        client can't enumerate target existence across projects by
+        string-matching response bodies.  Pushing the project filter
+        into the SQL means the router can't accidentally bypass it.
+
+        Returns Targets in the same order as ``target_ids``.  Ids
+        that have no matching row in the project are silently dropped
+        — the caller compares the returned list's ids against the
+        requested ids to compute the unknown set and surfaces the
+        canonical 422.
+        """
+        if not target_ids:
+            return []
+        stmt = (
+            select(Target).where(Target.id.in_(target_ids)).where(Target.project_id == project_id)
+        )
+        found = list(session.execute(stmt).scalars().all())
+        by_id = {t.id: t for t in found}
+        return [by_id[tid] for tid in target_ids if tid in by_id]
 
     def delete(self, session: Session, target_id: uuid.UUID) -> bool:
         """Delete the Target.  Returns ``True`` if a row was removed.

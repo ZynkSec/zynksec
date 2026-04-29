@@ -243,14 +243,15 @@ def test_scan_group_with_duplicate_target_ids_returns_canonical_422(
     assert body["request_id"]
 
 
-def test_scan_group_with_empty_target_ids_returns_pydantic_422(
+def test_scan_group_with_empty_target_ids_returns_canonical_422(
     api_client: httpx.Client,
 ) -> None:
-    """Empty list → Pydantic 422 (default ``{"detail": [...]}`` shape).
+    """Empty list → Pydantic ``min_length=1`` rejection.
 
-    The prompt explicitly calls for the Pydantic ``min_length=1``
-    treatment on this case, distinct from the canonical envelope
-    used for unknown / duplicate ids.
+    Phase 2 debt-paydown: every 4xx now carries the canonical
+    envelope (CLAUDE.md §4), including Pydantic-driven validation
+    failures.  The original error list is preserved under
+    ``details.errors``.
     """
     response = api_client.post(
         "/api/v1/scan-groups",
@@ -258,8 +259,11 @@ def test_scan_group_with_empty_target_ids_returns_pydantic_422(
     )
     assert response.status_code == 422, response.text
     body = response.json()
-    detail = body["detail"]
-    assert any("target_ids" in str(err.get("loc", ())) for err in detail), body
+    assert body["code"] == "request_validation_error"
+    assert body["message"]
+    assert body["request_id"]
+    errors = body["details"]["errors"]
+    assert any("target_ids" in str(err.get("loc", ())) for err in errors), body
 
 
 def test_scan_group_partial_failure_when_one_child_target_kind_unsupported(
@@ -296,6 +300,19 @@ def test_scan_group_partial_failure_when_one_child_target_kind_unsupported(
     assert body["summary"]["failed"] == 1
     assert body["summary"]["total"] == 2
 
+    # Phase 2 debt-paydown: the failed child's API response must
+    # carry ``failure_reason`` matching the worker's reject string
+    # (``apps/worker/.../tasks/_execution.py``: "no scanner supports
+    # this target").  This locks in two contracts together — the
+    # column is persisted by ``ScanRepository.mark_failed`` AND
+    # surfaces on the embedded ``child_scans`` entry in the group
+    # response, so a client reading the group sees why a child failed
+    # without a second round-trip.
+    embedded_failed = next(c for c in body["child_scans"] if c["status"] == "failed")
+    assert embedded_failed["failure_reason"] == "no scanner supports this target"
+    embedded_completed = next(c for c in body["child_scans"] if c["status"] == "completed")
+    assert embedded_completed["failure_reason"] is None
+
     # The web_app child should have completed and persisted findings;
     # the repo child should be marked failed.
     children = (
@@ -307,6 +324,8 @@ def test_scan_group_partial_failure_when_one_child_target_kind_unsupported(
     surviving_child = by_target[uuid.UUID(web["id"])]
     assert surviving_child.status == "completed"
     assert by_target[uuid.UUID(repo["id"])].status == "failed"
+    # DB-level: the column itself, not just the API surface.
+    assert by_target[uuid.UUID(repo["id"])].failure_reason == "no scanner supports this target"
 
     # The whole point of partial_failure: the surviving child still
     # produced real findings.  Without this assertion the test would

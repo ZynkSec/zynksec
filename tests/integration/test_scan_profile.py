@@ -24,13 +24,15 @@ from __future__ import annotations
 import httpx
 
 
-def test_post_scan_with_invalid_profile_returns_pydantic_422(
+def test_post_scan_with_invalid_profile_returns_canonical_422(
     api_client: httpx.Client,
 ) -> None:
     """Unknown profile strings are rejected by Pydantic before the
-    router runs — 422 from FastAPI's RequestValidationError handler
-    (default ``{"detail": [...]}`` shape, distinct from the canonical
-    ZynksecError envelope)."""
+    router runs.  Phase 2 debt-paydown registered a custom
+    RequestValidationError handler so the response now carries the
+    canonical envelope (CLAUDE.md §4) — same shape as every other
+    4xx — with the original Pydantic error list preserved under
+    ``details.errors`` for callers that want field-level info."""
     response = api_client.post(
         "/api/v1/scans",
         json={
@@ -40,5 +42,8 @@ def test_post_scan_with_invalid_profile_returns_pydantic_422(
     )
     assert response.status_code == 422, response.text
     body = response.json()
-    detail = body["detail"]
-    assert any("scan_profile" in str(err.get("loc", ())) for err in detail), body
+    assert body["code"] == "request_validation_error"
+    assert body["message"]
+    assert body["request_id"]
+    errors = body["details"]["errors"]
+    assert any("scan_profile" in str(err.get("loc", ())) for err in errors), body

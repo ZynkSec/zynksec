@@ -11,7 +11,6 @@ from __future__ import annotations
 import uuid
 from typing import Annotated
 
-import sqlalchemy as sa
 from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session
 from zynksec_db import FindingRepository, Scan, ScanRepository, TargetRepository
@@ -80,6 +79,7 @@ def _scan_to_read(scan: Scan, findings: list[object]) -> ScanRead:
         status=scan.status,  # type: ignore[arg-type]
         started_at=scan.started_at,
         completed_at=scan.completed_at,
+        failure_reason=scan.failure_reason,
         created_at=scan.created_at,
         findings=findings,  # type: ignore[arg-type]
     )
@@ -150,7 +150,7 @@ def create_scan(
     # alternate (Postgres serializable isolation isn't required;
     # MVCC + the count's commit-ordering settle it correctly enough
     # for the legacy path's "approximately fair" guarantee).
-    instance_index = _next_instance_index(session)
+    instance_index = _next_instance_index(session, repo)
     queue = zap_queue_for_index(instance_index)
 
     scan = Scan(
@@ -172,7 +172,7 @@ def create_scan(
     return _scan_to_read(scan, findings=[])
 
 
-def _next_instance_index(session: Session) -> int:
+def _next_instance_index(session: Session, repo: ScanRepository) -> int:
     """Pick the 1-based ZAP instance index for a legacy single-scan POST.
 
     Uses ``COUNT(*) FROM scans`` modulo ``ZAP_INSTANCE_COUNT`` as a
@@ -191,7 +191,7 @@ def _next_instance_index(session: Session) -> int:
     """
     settings = get_settings()
     n = settings.zap_instance_count
-    count = int(session.execute(sa.select(sa.func.count(Scan.id))).scalar_one() or 0)
+    count = repo.total_count(session)
     return (count % n) + 1
 
 

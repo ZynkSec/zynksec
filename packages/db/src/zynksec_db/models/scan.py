@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Index, String, func
+from sqlalchemy import DateTime, Enum, ForeignKey, Index, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -110,6 +110,17 @@ class Scan(Base):
     )
     completed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
+        nullable=True,
+        default=None,
+    )
+    # Phase 2 debt-paydown: populated by ``ScanRepository.mark_failed``
+    # on terminal-failure transitions; surfaced unchanged on
+    # ``GET /api/v1/scans/{id}`` so operators can see why a scan failed
+    # without grepping worker logs.  ``Text`` rather than a length-bounded
+    # ``String`` because plugin rejection messages and exception strings
+    # can be long; we never filter on this column so no index either.
+    failure_reason: Mapped[str | None] = mapped_column(
+        Text,
         nullable=True,
         default=None,
     )

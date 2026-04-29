@@ -88,5 +88,9 @@ class ScanRead(BaseModel):
     status: ScanStatus
     started_at: datetime | None = None
     completed_at: datetime | None = None
+    # Phase 2 debt-paydown: populated when the scan ends in ``failed``;
+    # ``None`` for queued / running / completed scans and for failed
+    # rows that pre-date the column.
+    failure_reason: str | None = None
     created_at: datetime
     findings: list[FindingRead] = Field(default_factory=list)
