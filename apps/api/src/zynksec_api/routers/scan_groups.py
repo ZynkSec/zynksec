@@ -58,7 +58,8 @@ from zynksec_api.exceptions import (
     UnknownTargetIds,
 )
 from zynksec_api.routers._project_resolution import resolve_project_for_request
-from zynksec_api.schemas import ScanGroupCreate, ScanGroupRead, ScanGroupSummary
+from zynksec_api.schemas import ScanGroupCreate, ScanGroupRead, ScanGroupSummary, ScanRead
+from zynksec_api.schemas.target import TargetSummary
 
 router = APIRouter(prefix="/api/v1/scan-groups", tags=["scan-groups"])
 
@@ -78,39 +79,74 @@ ScanGroupRepoDep = Annotated[ScanGroupRepository, Depends(get_scan_group_reposit
 ScanRepoDep = Annotated[ScanRepository, Depends(get_scan_repository)]
 
 
-def _children_summary_and_ids(
+def _child_scan_to_read(scan: Scan) -> ScanRead:
+    """Build a :class:`ScanRead` for a child embedded in a group response.
+
+    ``findings`` is intentionally empty — the group response surfaces
+    every child's status / failure_reason / queue assignment without
+    expanding findings (clients ``GET /api/v1/scans/{id}`` to drill
+    in).  The Target relationship has ``lazy="joined"`` on the model
+    so reading ``scan.target`` doesn't introduce N+1.
+    """
+    target_summary: TargetSummary | None = None
+    if scan.target_id is not None and scan.target is not None:
+        target_summary = TargetSummary(
+            id=scan.target.id,
+            name=scan.target.name,
+            url=scan.target.url,
+        )
+    return ScanRead(
+        id=scan.id,
+        project_id=scan.project_id,
+        target_url=scan.target_url,
+        target=target_summary,
+        scan_group_id=scan.scan_group_id,
+        scan_profile=ScanProfile(scan.scan_profile),
+        status=scan.status,  # type: ignore[arg-type]
+        started_at=scan.started_at,
+        completed_at=scan.completed_at,
+        failure_reason=scan.failure_reason,
+        created_at=scan.created_at,
+        findings=[],
+    )
+
+
+def _children_rollup(
     session: Session,
     scan_group_id: uuid.UUID,
-) -> tuple[ScanGroupSummary, list[uuid.UUID]]:
-    """Compute the per-status summary + ordered child id list.
+) -> tuple[ScanGroupSummary, list[uuid.UUID], list[ScanRead]]:
+    """Per-status summary + ordered child id list + embedded ScanReads.
 
     Reads all child Scan rows ordered by ``created_at`` so the id
     list matches the deterministic order the worker iterates in.
-    Phase 2 Sprint 2 caps groups at 50 children, so a Python-side
-    Counter is cheap; if N grows, this becomes a SQL aggregation.
+    Phase 2 Sprint 2 caps groups at 50 children, so building N
+    ScanRead objects in-process is cheap; if N grows, the embedded
+    list becomes a paginated sub-resource.
     """
     stmt = (
-        select(Scan.id, Scan.status)
+        select(Scan)
         .where(Scan.scan_group_id == scan_group_id)
         .order_by(Scan.created_at.asc(), Scan.id.asc())
     )
-    rows = list(session.execute(stmt).all())
-    child_ids = [row[0] for row in rows]
-    statuses: Counter[str] = Counter(row[1] for row in rows)
+    children = list(session.execute(stmt).scalars().all())
+    child_ids = [c.id for c in children]
+    child_scans = [_child_scan_to_read(c) for c in children]
+    statuses: Counter[str] = Counter(c.status for c in children)
     summary = ScanGroupSummary(
-        total=len(rows),
+        total=len(children),
         queued=statuses.get("queued", 0),
         running=statuses.get("running", 0),
         completed=statuses.get("completed", 0),
         failed=statuses.get("failed", 0),
     )
-    return summary, child_ids
+    return summary, child_ids, child_scans
 
 
 def _scan_group_to_read(
     group: ScanGroup,
     summary: ScanGroupSummary,
     child_ids: list[uuid.UUID],
+    child_scans: list[ScanRead],
 ) -> ScanGroupRead:
     return ScanGroupRead(
         id=group.id,
@@ -119,6 +155,7 @@ def _scan_group_to_read(
         scan_profile=ScanProfile(group.scan_profile),
         status=group.status,  # type: ignore[arg-type]
         child_scan_ids=child_ids,
+        child_scans=child_scans,
         summary=summary,
         started_at=group.started_at,
         completed_at=group.completed_at,
@@ -268,7 +305,8 @@ def create_scan_group(
         completed=0,
         failed=0,
     )
-    return _scan_group_to_read(group, summary, [c.id for c in children])
+    child_scans = [_child_scan_to_read(c) for c in children]
+    return _scan_group_to_read(group, summary, [c.id for c in children], child_scans)
 
 
 @router.get(
@@ -291,8 +329,8 @@ def list_scan_groups(
     groups = repo.list_by_project(session, project.id)
     out: list[ScanGroupRead] = []
     for group in groups:
-        summary, child_ids = _children_summary_and_ids(session, group.id)
-        out.append(_scan_group_to_read(group, summary, child_ids))
+        summary, child_ids, child_scans = _children_rollup(session, group.id)
+        out.append(_scan_group_to_read(group, summary, child_ids, child_scans))
     return out
 
 
@@ -309,5 +347,5 @@ def get_scan_group(
     group = repo.get(session, scan_group_id)
     if group is None:
         raise ScanGroupNotFound(f"scan_group {scan_group_id} does not exist")
-    summary, child_ids = _children_summary_and_ids(session, group.id)
-    return _scan_group_to_read(group, summary, child_ids)
+    summary, child_ids, child_scans = _children_rollup(session, group.id)
+    return _scan_group_to_read(group, summary, child_ids, child_scans)

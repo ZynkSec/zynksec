@@ -17,6 +17,8 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 from zynksec_schema import ScanProfile
 
+from zynksec_api.schemas.scan import ScanRead
+
 ScanGroupStatus = Literal["queued", "running", "completed", "partial_failure", "failed"]
 
 
@@ -67,6 +69,15 @@ class ScanGroupRead(BaseModel):
     ``child_scan_ids`` lists the children's ids in their creation
     order — clients can ``GET /api/v1/scans/{id}`` for each to drill
     in.  ``summary`` carries the same information aggregated.
+
+    ``child_scans`` (Phase 2 debt-paydown) embeds the same children
+    as full :class:`ScanRead` objects so a single GET surfaces every
+    child's status / ``failure_reason`` / queue assignment without an
+    extra round-trip per child.  ``findings`` on each embedded
+    ScanRead is intentionally empty — clients fetch
+    ``GET /api/v1/scans/{id}`` to drill into findings, the same way
+    POST /api/v1/scans returns ``findings=[]`` immediately after
+    enqueue.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -77,6 +88,7 @@ class ScanGroupRead(BaseModel):
     scan_profile: ScanProfile
     status: ScanGroupStatus
     child_scan_ids: list[uuid.UUID] = Field(default_factory=list)
+    child_scans: list[ScanRead] = Field(default_factory=list)
     summary: ScanGroupSummary
     started_at: datetime | None = None
     completed_at: datetime | None = None

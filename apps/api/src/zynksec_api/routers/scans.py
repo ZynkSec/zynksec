@@ -80,6 +80,7 @@ def _scan_to_read(scan: Scan, findings: list[object]) -> ScanRead:
         status=scan.status,  # type: ignore[arg-type]
         started_at=scan.started_at,
         completed_at=scan.completed_at,
+        failure_reason=scan.failure_reason,
         created_at=scan.created_at,
         findings=findings,  # type: ignore[arg-type]
     )

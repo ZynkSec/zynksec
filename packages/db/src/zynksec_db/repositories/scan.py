@@ -50,14 +50,21 @@ class ScanRepository(Repository[Scan]):
         scan_id: uuid.UUID,
         reason: str,
     ) -> Scan | None:
-        """* -> failed.  ``reason`` is logged; a ``failure_reason`` column
-        lands in Phase 1 when we persist the details.
+        """* -> failed.  Persists ``reason`` on the row and logs it.
+
+        The log line stays so failures are visible without a DB query;
+        the column makes the same string available to any client of the
+        scan via the API response (``ScanRead.failure_reason``).
         """
         _log.warning("scan.failed scan_id=%s reason=%s", scan_id, reason)
         session.execute(
             update(Scan)
             .where(Scan.id == scan_id)
-            .values(status="failed", completed_at=datetime.now(UTC))
+            .values(
+                status="failed",
+                completed_at=datetime.now(UTC),
+                failure_reason=reason,
+            )
         )
         session.flush()
         return session.get(Scan, scan_id)
