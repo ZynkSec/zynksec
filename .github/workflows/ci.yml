@@ -193,20 +193,32 @@ jobs:
             done
             test "$status" = "healthy" || { echo "$svc never became healthy ($status)"; exit 1; }
           done
-      - name: Wait for dvwa-init schema-setup to complete
-        # ``docker compose wait`` blocks until the named service exits
-        # and propagates its exit code.  Without this, the test step
-        # would race init's two-step CSRF + create_db flow.  Init's
-        # bash logs (``[dvwa-init] schema created`` on success) come
-        # via ``docker logs zynksec-dvwa-init`` if it fails.
+      - name: Verify dvwa-init schema-setup completed cleanly
+        # ``docker compose wait`` only finds currently-running
+        # containers, and dvwa-init has typically exited 0 by the
+        # time we get here (its two-step CSRF + create_db flow runs
+        # in ~2 s once dvwa is healthy, while the ``up`` step blocks
+        # for ~30-60 s waiting on the ZAPs).  ``docker inspect`` reads
+        # the exit code from the still-present (but stopped)
+        # container — works whether it's running or already exited.
+        # Init's bash logs (``[dvwa-init] schema created`` on
+        # success) come via ``docker logs`` if it failed.
         run: |
           set -euo pipefail
-          docker compose \
-            -f docker-compose.yml \
-            -f docker-compose.ci.yml \
-            -f target-lab/compose-targets.yml \
-            -f tests/integration/docker-compose.test.yml \
-            wait dvwa-init
+          for _ in $(seq 1 30); do
+            state=$(docker inspect --format='{{.State.Status}}' zynksec-dvwa-init 2>/dev/null || echo missing)
+            if [ "$state" = "exited" ]; then break; fi
+            echo "dvwa-init state=$state, waiting..."
+            sleep 2
+          done
+          test "$state" = "exited" || { echo "dvwa-init never exited (state=$state)"; exit 1; }
+          exit_code=$(docker inspect --format='{{.State.ExitCode}}' zynksec-dvwa-init)
+          if [ "$exit_code" != "0" ]; then
+            echo "dvwa-init failed with exit code $exit_code"
+            docker logs zynksec-dvwa-init
+            exit 1
+          fi
+          echo "dvwa-init completed cleanly"
       - name: Apply Alembic migrations
         run: |
           set -euo pipefail
