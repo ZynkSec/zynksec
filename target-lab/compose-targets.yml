@@ -38,6 +38,152 @@ services:
       retries: 20
       start_period: 30s
 
+  # ---------- DVWA: AGGRESSIVE differentiation target (Phase 2 Sprint 5) ----
+  # juice-shop's Node.js + SQLite stack doesn't surface the AGGRESSIVE-only
+  # ZAP scanners (time-based MySQL SQLi, PHP code injection, etc.) — the
+  # AGGRESSIVE-vs-SAFE_ACTIVE delta on juice-shop ties.  DVWA is PHP 8.1
+  # + MariaDB; AGGRESSIVE's HIGH-strength + LOW-threshold scanners that
+  # target PHP/MySQL form params (40019 SQL Injection - MySQL time-based
+  # in particular) fire on DVWA where they didn't on juice-shop, which
+  # is what makes the strict ``aggressive_count > safe_active_count``
+  # assertion honest.
+  #
+  # Image: cytopia/dvwa:latest (PHP 8.1, last published 2023-03 — the
+  # most recently maintained DVWA image at sprint-time; older
+  # ``vulnerables/web-dvwa`` last touched 2021).  cytopia configures
+  # itself via env vars (no ``setup.php`` POST needed for security-level
+  # / PHPIDS), but does NOT auto-create the schema — the ``dvwa-init``
+  # one-shot container below POSTs ``create_db`` to ``/setup.php``.
+  #
+  # SECURITY_LEVEL=low matters: DVWA's per-page vulnerability code
+  # paths (the ones at ``/vulnerabilities/*``) gate on the user's
+  # security cookie, but ``default_security_level`` controls what
+  # happens when no cookie is set — which is exactly the case for an
+  # unauthenticated ZAP scan.  At ``medium`` (cytopia's default) most
+  # injections are partially mitigated; at ``low`` the canonical
+  # vulnerable code runs.  PHPIDS_ENABLED=disabled keeps DVWA's
+  # request-pattern firewall out of the way of scanner payloads.
+  #
+  # Memory ceiling: 512m for DVWA + 256m for the DB = 768m — well
+  # inside the 12 GiB Docker VM ceiling alongside the two ZAP +
+  # juice-shop + the core stack.
+  dvwa-db:
+    image: mariadb:10.6
+    container_name: zynksec-dvwa-db
+    restart: unless-stopped
+    profiles:
+      - lab
+    environment:
+      MARIADB_ROOT_PASSWORD: changeme-dvwa-mariadb-root
+      MARIADB_DATABASE: dvwa
+      MARIADB_USER: dvwa
+      MARIADB_PASSWORD: changeme-dvwa-pass
+    networks:
+      - zynksec-targets
+    mem_limit: 256m
+    memswap_limit: 256m
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "mariadb-admin ping -h 127.0.0.1 -u dvwa -pchangeme-dvwa-pass"
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 30s
+
+  dvwa:
+    image: cytopia/dvwa:latest
+    container_name: zynksec-dvwa
+    restart: unless-stopped
+    profiles:
+      - lab
+    environment:
+      MYSQL_HOSTNAME: dvwa-db
+      MYSQL_DATABASE: dvwa
+      MYSQL_USERNAME: dvwa
+      MYSQL_PASSWORD: changeme-dvwa-pass
+      # See block-comment above on why ``low`` not ``medium``.
+      SECURITY_LEVEL: low
+      PHPIDS_ENABLED: disabled
+      # Surface SQL error strings on the page so error-based SQLi
+      # scanners have something to fingerprint.  Production DVWA
+      # would NEVER do this; this is exactly the dev-target footgun
+      # that makes SAFE_ACTIVE / AGGRESSIVE differentiate.
+      PHP_DISPLAY_ERRORS: "1"
+    # Wrap cytopia's stock entrypoint to also append
+    # ``disable_authentication = true`` to config.inc.php.  Without
+    # this, ZAP can't scan ``/vulnerabilities/*`` (the only
+    # intentionally-vulnerable code paths in DVWA) — those pages
+    # gate on a logged-in PHPSESSID + security cookie that an
+    # unauthenticated scan request doesn't carry.  ``/login.php``
+    # itself is properly escaped via ``mysqli_real_escape_string``
+    # so scanning that page alone doesn't differentiate AGGRESSIVE
+    # from SAFE_ACTIVE.  See target-lab/dvwa/entrypoint-wrapper.sh
+    # for the lifecycle details.
+    entrypoint: ["/target-lab/dvwa-entrypoint-wrapper.sh"]
+    volumes:
+      - ./target-lab/dvwa/entrypoint-wrapper.sh:/target-lab/dvwa-entrypoint-wrapper.sh:ro
+    depends_on:
+      dvwa-db:
+        condition: service_healthy
+    networks:
+      - zynksec-targets
+    mem_limit: 512m
+    memswap_limit: 512m
+    healthcheck:
+      # cytopia/dvwa ships curl in /usr/bin/curl.  /login.php is
+      # served as soon as Apache is up; before the schema is
+      # initialised it still returns 200 (the page itself doesn't
+      # query the DB).
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://localhost/login.php"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 30s
+
+  # One-shot DB initialiser.  cytopia/dvwa writes config.inc.php
+  # on entrypoint but never POSTs ``create_db`` to ``/setup.php`` —
+  # so DVWA boots with a healthy login page but an empty database.
+  # This container blocks on dvwa being healthy, runs the two-step
+  # CSRF-token + create-db flow once, and exits 0.
+  # ``service_completed_successfully`` is what the test fixture / CI
+  # waits on before scanning.
+  #
+  # The two-step dance: DVWA's ``setup.php`` enforces a per-session
+  # CSRF token (``user_token``) on the create-db POST.  We GET the
+  # form first (capturing the cookie + parsing the token out of the
+  # hidden input), then POST with both.  Without the token,
+  # ``dvwaDatabaseSetup()`` never runs and DVWA boots schema-less.
+  dvwa-init:
+    image: curlimages/curl:8.5.0
+    container_name: zynksec-dvwa-init
+    profiles:
+      - lab
+    depends_on:
+      dvwa:
+        condition: service_healthy
+    networks:
+      - zynksec-targets
+    restart: "no"
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        set -eu
+        # Step 1: GET setup.php, save cookie + extract user_token.
+        TOKEN=$$(curl -fsS -c /tmp/c.txt http://dvwa/setup.php \
+          | sed -n "s/.*name=['\"]user_token['\"] value=['\"]\([^'\"]*\)['\"].*/\1/p" \
+          | head -1)
+        if [ -z "$$TOKEN" ]; then
+          echo "[dvwa-init] failed to parse user_token from /setup.php" >&2
+          exit 1
+        fi
+        # Step 2: POST create_db with the captured token + cookie.
+        curl -fsS -b /tmp/c.txt -X POST \
+          --data-urlencode "create_db=Create / Reset Database" \
+          --data-urlencode "user_token=$$TOKEN" \
+          http://dvwa/setup.php > /dev/null
+        echo "[dvwa-init] schema created"
+
 # This file is intended as an overlay — `zynksec-targets` is declared
 # in docker-compose.yml with `internal: true`; when Compose merges
 # our `-f` chain, services here reference that declaration.  Adding a

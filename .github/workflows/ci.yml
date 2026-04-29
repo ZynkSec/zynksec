@@ -151,12 +151,16 @@ jobs:
       - name: Prepare .env
         # docker compose's env_file needs the file on disk.
         run: cp .env.example .env
-      - name: Start Compose stack (+ lab profile for juice-shop)
+      - name: Start Compose stack (+ lab profile for juice-shop + DVWA)
         # ``docker-compose.ci.yml`` lowers each ZAP from the canonical
         # 6 GiB cgroup to 4 GiB so the multi-instance Sprint-3 stack
         # fits the free-tier ubuntu-latest runner's ~7 GiB RAM ceiling
         # without OOM.  Production / dev-laptop-with-headroom keep the
         # unmodified 6 GiB caps.  See the file header for context.
+        #
+        # ``--wait`` blocks until each service reports healthy AND the
+        # one-shot ``dvwa-init`` container exits 0; without it the next
+        # step's healthcheck loop would race the DB initialisation.
         run: |
           set -euo pipefail
           docker compose \
@@ -165,11 +169,12 @@ jobs:
             -f target-lab/compose-targets.yml \
             -f tests/integration/docker-compose.test.yml \
             --profile dev --profile lab \
-            up -d postgres redis worker1 worker2 api mailpit zap1 zap2 juice-shop
-      - name: Wait for ZAP + juice-shop to report healthy
+            up -d --wait postgres redis worker1 worker2 api mailpit zap1 zap2 \
+            juice-shop dvwa-db dvwa dvwa-init
+      - name: Wait for ZAP + juice-shop + DVWA to report healthy
         run: |
           set -euo pipefail
-          for svc in zynksec-zap1 zynksec-zap2 zynksec-juice-shop; do
+          for svc in zynksec-zap1 zynksec-zap2 zynksec-juice-shop zynksec-dvwa; do
             echo "waiting for $svc..."
             for _ in $(seq 1 90); do
               status=$(docker inspect --format='{{.State.Health.Status}}' "$svc" 2>/dev/null || echo unknown)
