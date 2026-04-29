@@ -5,8 +5,9 @@ HTTP-framework or Celery specifics — it is pure data access.
 """
 
 from zynksec_db.base import Base
-from zynksec_db.models import Finding, Project, Scan, ScanGroup, Target
+from zynksec_db.models import CodeFinding, Finding, Project, Scan, ScanGroup, Target
 from zynksec_db.repositories import (
+    CodeFindingRepository,
     FindingRepository,
     ProjectRepository,
     Repository,
@@ -20,6 +21,8 @@ __version__ = "0.0.0"
 
 __all__ = [
     "Base",
+    "CodeFinding",
+    "CodeFindingRepository",
     "Finding",
     "FindingRepository",
     "Project",
