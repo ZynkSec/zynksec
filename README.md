@@ -71,8 +71,32 @@ docker compose --profile lab up -d --build
 docker compose exec api alembic -c apps/api/alembic.ini upgrade head
 ```
 
-Adds `zap` and `juice-shop` on isolated Docker networks. Run a real
-passive scan against the intentionally-vulnerable
+Adds `zap` plus two intentionally-vulnerable target apps on isolated
+Docker networks:
+
+- **juice-shop** (Node.js + SQLite) — primary PASSIVE / SAFE_ACTIVE
+  target. ~327 findings on a full PASSIVE scan; ~5-8 min for
+  SAFE_ACTIVE on a single subpath.
+- **dvwa** (PHP 8.1 + MariaDB) — second non-Node stack so the
+  AGGRESSIVE-on-PHP+MySQL plumbing test has a surface to exercise.
+  Booted with `disable_authentication=true` and `security=low` so
+  ZAP can scan `/vulnerabilities/*` directly. The
+  [`dvwa-init`](target-lab/compose-targets.yml) one-shot container
+  POSTs `/setup.php` to create the schema once after both DVWA and
+  its MariaDB sidecar are healthy.
+
+  AGGRESSIVE-by-count differentiation is empirically NOT achievable
+  on either of these off-the-shelf training apps within ZAP's
+  default scanner timeouts — see
+  [`docs/architecture/zap-resource-tuning.md`](docs/architecture/zap-resource-tuning.md)
+  ("Why AGGRESSIVE differentiates in policy/behaviour but not in
+  count on standard training apps") for the empirical write-up. The
+  AGGRESSIVE-on-juice-shop test (gated by `RUN_AGGRESSIVE_TESTS=1`)
+  and the AGGRESSIVE-on-DVWA test (default suite) both verify
+  policy-applied + active-scan-ran + count-non-regression rather
+  than a strict count delta.
+
+Run a real passive scan against the
 [OWASP Juice Shop](https://owasp.org/www-project-juice-shop/) target:
 
 ```bash

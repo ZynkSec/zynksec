@@ -151,12 +151,23 @@ jobs:
       - name: Prepare .env
         # docker compose's env_file needs the file on disk.
         run: cp .env.example .env
-      - name: Start Compose stack (+ lab profile for juice-shop)
+      - name: Start Compose stack (+ lab profile for juice-shop + DVWA)
         # ``docker-compose.ci.yml`` lowers each ZAP from the canonical
         # 6 GiB cgroup to 4 GiB so the multi-instance Sprint-3 stack
         # fits the free-tier ubuntu-latest runner's ~7 GiB RAM ceiling
         # without OOM.  Production / dev-laptop-with-headroom keep the
         # unmodified 6 GiB caps.  See the file header for context.
+        #
+        # NOTE: no ``--wait``.  The Compose version on GitHub-hosted
+        # runners has a quirk where ``up --wait`` returns exit code 1
+        # when a one-shot service (here ``dvwa-init``, ``restart: no``)
+        # exits 0 — Compose's "still running?" check sees a stopped
+        # container and reports failure even though the operation
+        # succeeded.  The explicit health loop below covers the
+        # original intent (block until every dependent is up and
+        # init has run); the ``docker compose wait dvwa-init`` step
+        # after it captures init's exit code so we still fail loudly
+        # if the schema setup actually breaks.
         run: |
           set -euo pipefail
           docker compose \
@@ -165,11 +176,12 @@ jobs:
             -f target-lab/compose-targets.yml \
             -f tests/integration/docker-compose.test.yml \
             --profile dev --profile lab \
-            up -d postgres redis worker1 worker2 api mailpit zap1 zap2 juice-shop
-      - name: Wait for ZAP + juice-shop to report healthy
+            up -d postgres redis worker1 worker2 api mailpit zap1 zap2 \
+            juice-shop dvwa-db dvwa dvwa-init
+      - name: Wait for ZAP + juice-shop + DVWA to report healthy
         run: |
           set -euo pipefail
-          for svc in zynksec-zap1 zynksec-zap2 zynksec-juice-shop; do
+          for svc in zynksec-zap1 zynksec-zap2 zynksec-juice-shop zynksec-dvwa; do
             echo "waiting for $svc..."
             for _ in $(seq 1 90); do
               status=$(docker inspect --format='{{.State.Health.Status}}' "$svc" 2>/dev/null || echo unknown)
@@ -181,6 +193,32 @@ jobs:
             done
             test "$status" = "healthy" || { echo "$svc never became healthy ($status)"; exit 1; }
           done
+      - name: Verify dvwa-init schema-setup completed cleanly
+        # ``docker compose wait`` only finds currently-running
+        # containers, and dvwa-init has typically exited 0 by the
+        # time we get here (its two-step CSRF + create_db flow runs
+        # in ~2 s once dvwa is healthy, while the ``up`` step blocks
+        # for ~30-60 s waiting on the ZAPs).  ``docker inspect`` reads
+        # the exit code from the still-present (but stopped)
+        # container — works whether it's running or already exited.
+        # Init's bash logs (``[dvwa-init] schema created`` on
+        # success) come via ``docker logs`` if it failed.
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 30); do
+            state=$(docker inspect --format='{{.State.Status}}' zynksec-dvwa-init 2>/dev/null || echo missing)
+            if [ "$state" = "exited" ]; then break; fi
+            echo "dvwa-init state=$state, waiting..."
+            sleep 2
+          done
+          test "$state" = "exited" || { echo "dvwa-init never exited (state=$state)"; exit 1; }
+          exit_code=$(docker inspect --format='{{.State.ExitCode}}' zynksec-dvwa-init)
+          if [ "$exit_code" != "0" ]; then
+            echo "dvwa-init failed with exit code $exit_code"
+            docker logs zynksec-dvwa-init
+            exit 1
+          fi
+          echo "dvwa-init completed cleanly"
       - name: Apply Alembic migrations
         run: |
           set -euo pipefail

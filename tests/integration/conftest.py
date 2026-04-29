@@ -120,18 +120,26 @@ def _wait_for_container_healthy(container: str, timeout_s: int) -> None:
 @pytest.fixture(scope="session", autouse=True)
 def _compose_up() -> Iterator[None]:
     """Bring up the full stack (api + worker1/worker2 + zap1/zap2 +
-    juice-shop) for the whole test session.  Leading underscore
-    satisfies PT004.  Phase 2 Sprint 3 introduced the multi-instance
-    ZAP topology — each worker pins to one ZAP daemon and consumes
-    from one Celery queue (zap_q_1 / zap_q_2).
+    juice-shop + dvwa + dvwa-db) for the whole test session.  Leading
+    underscore satisfies PT004.  Phase 2 Sprint 3 introduced the
+    multi-instance ZAP topology — each worker pins to one ZAP daemon
+    and consumes from one Celery queue (zap_q_1 / zap_q_2).  Sprint 5
+    added DVWA as the AGGRESSIVE-differentiation target alongside
+    juice-shop.
     """
 
     if not _KEEP_STACK:
+        # ``dvwa-init`` is a one-shot container that POSTs ``create_db``
+        # to /setup.php once dvwa is healthy.  ``--wait`` blocks compose
+        # until every service either becomes healthy or, for one-shots,
+        # exits 0 — so when ``up -d`` returns, the DVWA schema is
+        # initialised and the test fixture can scan immediately.
         _run(
             _compose(
                 "up",
                 "-d",
                 "--build",
+                "--wait",
                 "postgres",
                 "redis",
                 "worker1",
@@ -141,6 +149,9 @@ def _compose_up() -> Iterator[None]:
                 "zap1",
                 "zap2",
                 "juice-shop",
+                "dvwa-db",
+                "dvwa",
+                "dvwa-init",
             )
         )
 
@@ -149,6 +160,7 @@ def _compose_up() -> Iterator[None]:
         _wait_for_container_healthy("zynksec-zap1", timeout_s=_ZAP_READY_TIMEOUT_S)
         _wait_for_container_healthy("zynksec-zap2", timeout_s=_ZAP_READY_TIMEOUT_S)
         _wait_for_container_healthy("zynksec-juice-shop", timeout_s=_ZAP_READY_TIMEOUT_S)
+        _wait_for_container_healthy("zynksec-dvwa", timeout_s=_ZAP_READY_TIMEOUT_S)
         # Apply migrations (idempotent — CI also runs this).
         _run(
             _compose(

@@ -87,8 +87,38 @@ If you ever see `-Xmx1959m` in that output, the override didn't take effect — 
 - **You're seeing ExitCode=0 + OOMKilled=false + a worker `ConnectError` mid-scan.** Classic cgroup-OOM-of-child-of-PID-1 signature. Run `dmesg | grep CONSTRAINT_MEMCG` for confirmation, then either lower the scan's heap pressure or raise `mem_limit`. Don't just bump `-Xmx` — that makes the next OOM happen faster.
 - **You're seeing real `java.lang.OutOfMemoryError` in ZAP's logs.** This is the _good_ failure mode — diagnostic and recoverable. Either lower the per-scan heap pressure (smaller target, lower attack strength) or bump `-Xmx` AND `mem_limit` together.
 
+## Why AGGRESSIVE differentiates in policy/behaviour but not in count on standard training apps
+
+> **Status:** Phase 2 Sprint 5 — empirical write-up. Captured here so a future contributor doesn't burn another sprint re-discovering this.
+
+The AGGRESSIVE profile is real. The worker emits `zap.aggressive_policy.applied` with `attack_strength: HIGH`, `alert_threshold: LOW`, `thread_per_host: 4`, `delay_ms: 0`. The active scan runs to 100 % progress. Worker logs prove the AGGRESSIVE branch in `ZapPlugin.scan` actually executed.
+
+What AGGRESSIVE does NOT reliably do, against either juice-shop or DVWA, is produce a **strictly higher finding count** than SAFE_ACTIVE on the same target. Both off-the-shelf training apps return finding sets that collapse to identical fingerprints across the two profiles. This isn't a Zynksec bug — it's a property of (a) the ZAP scanner taxonomy, (b) the canonical `SAFE_ACTIVE_DISABLED_SCANNERS` list (`packages/scanners/src/zynksec_scanners/zap/plugin.py`), and (c) the surfaces these training apps actually expose.
+
+The AGGRESSIVE-only set (the scanners SAFE_ACTIVE disables and AGGRESSIVE enables) is:
+
+| Rule ID | Scanner | Why it doesn't fire on either lab target |
+| --- | --- | --- |
+| 40019 | SQL Injection — MySQL (time-based) | DVWA's `/vulnerabilities/sqli/` query has no `LIMIT`; a `SLEEP(5)` payload runs per row across 5 users → ~25 s per request, exceeding ZAP's default per-request timeout (30 s) under the multi-measurement confirmation pass. juice-shop is SQLite, not MySQL. |
+| 40020-40022, 40024, 40027 | SQL Injection — Hypersonic / Oracle / PostgreSQL / SQLite / MsSQL (time-based) | Wrong DBMS for both targets (juice-shop is SQLite, but its query patterns dodge the timing envelope; DVWA's MariaDB lands on 40019, which collapses for the reason above). |
+| 90017, 90021, 90023 | XSLT / XPath / XXE Injection | Neither target accepts XML on the scanned endpoints. |
+| 90035, 90036 | Server Side Template Injection (regular + blind) | Neither target uses a server-side template engine in the scanned scope. |
+| 30001, 30002 | Buffer Overflow / Format String | Don't manifest in modern PHP+Apache or Node+Express request handlers. |
+| 20018 | CVE-2012-1823 (PHP-CGI) | DVWA runs `mod_php`, not PHP-CGI. Wrong-stack regardless of security level. |
+| 20015 | Heartbleed | Both targets are plain HTTP. |
+| 90019 | Server Side Code Injection (heavy generic fuzz) | Requires the target to echo the raw payload back in a response. DVWA's `/vulnerabilities/sqli/` echoes `first_name, last_name` from a derived query but never the raw `id` parameter; juice-shop's JSON APIs echo only structured fields. |
+
+`SAFE_ACTIVE_DISABLED_SCANNERS` was deliberately tuned to drop fuzz-heavy / low-yield scanners that "rarely add signal that boolean/error-based variants miss on modern stacks" (see the constant's docstring). That tuning is correct — it just means **AGGRESSIVE-vs-SAFE_ACTIVE count differentiation requires custom vulnerable surfaces engineered against specific scanner detection envelopes**, not off-the-shelf training apps.
+
+### Practical consequences for the integration tests
+
+- **`tests/integration/test_aggressive_scan.py` (juice-shop, opt-in via `RUN_AGGRESSIVE_TESTS=1`)** asserts `aggressive_count >= safe_active_count` — equality is acceptable because juice-shop's Node + SQLite + JSON-only stack is wrong-context for the entire AGGRESSIVE-only set.
+- **`tests/integration/test_aggressive_dvwa.py` (DVWA, default suite)** asserts the same `>=` plus the additional invariant that AGGRESSIVE's fingerprint set is a (non-strict) **superset** of SAFE_ACTIVE's — AGGRESSIVE never DROPS a finding SAFE_ACTIVE produced. Combined with the policy-applied + ascan-ran-to-100 % plumbing assertions, this is what's actually verifiable against PHP+MySQL inside the constraints of "no worker tuning, no ZAP config tweaks."
+- A future Phase 3+ direction, if a customer needs AGGRESSIVE-by-count differentiation on demand: ship a **purpose-built target** (single-row queries with `LIMIT 1` for time-based SQLi, an explicit `eval()` sink for SSCI, a real XML/XSLT pipeline, etc.) — engineering vulnerable surfaces specifically against the scanner detection envelopes documented in this table. **Do not** weaken `SAFE_ACTIVE_DISABLED_SCANNERS` to chase a count delta — that constant earns its keep on real customer targets where the disabled scanners would just slow scans down without adding signal.
+
 ## See also
 
 - `packages/scanners/src/zynksec_scanners/zap/plugin.py` — `_apply_aggressive_policy` is the highest-pressure path.
 - `docker-compose.yml` `zap:` service — the comment block above `mem_limit` repeats the short version of this math.
+- `tests/integration/test_aggressive_dvwa.py` — module docstring captures the same empirical findings inline next to the test.
 - CLAUDE.md §14 — the "known gotchas" log; the cgroup-OOM-as-ExitCode-0 quirk lives there.
