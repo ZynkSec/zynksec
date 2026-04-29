@@ -29,6 +29,7 @@ Five tests, one assertion theme each:
 
 from __future__ import annotations
 
+import subprocess  # noqa: S404 — list-form docker exec probes, no shell
 import time
 import uuid
 
@@ -295,3 +296,112 @@ def test_scan_repo_target_routes_to_code_queue(
     # that the value isn't ``zap_q_*`` — protects against a future
     # registry edit that returns a non-empty but ZAP-shaped queue.
     assert not (row.assigned_queue or "").startswith("zap_q_"), row.assigned_queue
+
+
+def test_gitleaks_scan_cleans_up_all_disk_residue(
+    api_client: httpx.Client,
+) -> None:
+    """Pre-merge security-review BLOCKER #1 regression guard.
+
+    The plugin writes gitleaks' JSON report (containing plaintext
+    ``Match`` / ``Secret`` fields) to ``<scan_id>/gitleaks.json``,
+    sibling of the cloned repo.  Pre-fix, the cloner's teardown
+    only ``rmtree``'d the ``<scan_id>/repo/`` subdirectory — so
+    every scan accumulated a permanent on-disk credential dump
+    under ``/tmp/zynksec-scans/<scan_id>/gitleaks.json``.
+
+    Post-fix, teardown nukes the whole ``<scan_id>/`` root, which
+    is the single source of truth for "this scan is done, drop
+    everything."  This test asserts that invariant by listing
+    ``/tmp/zynksec-scans/`` from inside the code-worker
+    container after a scan completes — the scan's directory must
+    not exist.
+
+    Runs the assertion on BOTH the success path (a successful
+    scan against the gitfixture) AND the failure path (a clone
+    that gets rejected by the validator before any disk work
+    happens — the scan_id directory should still not be present
+    after the failed scan).  Both signals matter: a regression
+    that only cleaned up on success would leave plaintext residue
+    behind every clone that timed out, hit a network blip, or
+    otherwise tripped the ``CalledProcessError`` path.
+    """
+
+    def _scan_dir_exists_in_worker(scan_id: str) -> bool:
+        """Probe the code-worker container for a leftover scan root.
+
+        The path under test is the runtime tempdir layout the cloner
+        creates inside the container — same convention as
+        ``packages/scanners/.../repo/cloner.py:_scan_root``.  The
+        S108 "/tmp insecure" lint exception applies because we're
+        asserting on a path the SUT writes; we're not creating
+        anything here.
+        """
+        scan_path = f"/tmp/zynksec-scans/{scan_id}"  # noqa: S108 — SUT-owned path
+        # ``docker`` is on PATH inside the integration test runner;
+        # using a partial executable path is intentional for
+        # portability across CI runners (S607 noqa).
+        cmd = ["docker", "exec", "zynksec-code-worker", "test", "-e", scan_path]  # noqa: S607
+        result = subprocess.run(  # noqa: S603 — list-form, fixed args
+            cmd,
+            check=False,
+            capture_output=True,
+        )
+        # ``test -e`` exits 0 if the path exists, 1 if not.
+        return result.returncode == 0
+
+    # ---------- Success path ----------
+    target = _create_repo_target(api_client)
+    response = api_client.post("/api/v1/scans", json={"target_id": target["id"]})
+    assert response.status_code == 202
+    success_scan_id = response.json()["id"]
+    body = _wait_for_terminal(api_client, success_scan_id)
+    assert body["status"] == "completed", body
+
+    # rmtree races on debian's tmpfs sometimes lag a moment after
+    # the worker logs its terminal status; give the kernel a tick
+    # before asserting the path is gone.
+    deadline = time.monotonic() + 10.0
+    while _scan_dir_exists_in_worker(success_scan_id) and time.monotonic() < deadline:
+        time.sleep(0.5)
+    assert not _scan_dir_exists_in_worker(success_scan_id), (
+        f"after a successful scan, /tmp/zynksec-scans/{success_scan_id}/ still "
+        "exists in the code-worker container — gitleaks.json (plaintext "
+        "secrets!) is leaking past teardown"
+    )
+
+    # ---------- Failure path ----------
+    # Hit a URL the cloner accepts (host on the test allow-list)
+    # but for which ``git clone`` fails — a non-existent repo on
+    # the gitfixture server returns 404 from git-http-backend,
+    # which surfaces as ``CalledProcessError`` inside the cloner.
+    # That code path also rmtree's ``root`` (line 236-ish in
+    # cloner.py); the assertion verifies the failure path matches
+    # the success path.
+    fail_target_response = api_client.post(
+        "/api/v1/targets",
+        json={
+            "name": f"nonexistent-{uuid.uuid4().hex[:8]}",
+            "url": "http://gitfixture/does-not-exist.git",
+            "kind": "repo",
+        },
+    )
+    assert fail_target_response.status_code == 201, fail_target_response.text
+    fail_target = fail_target_response.json()
+    fail_response = api_client.post(
+        "/api/v1/scans",
+        json={"target_id": fail_target["id"]},
+    )
+    assert fail_response.status_code == 202
+    fail_scan_id = fail_response.json()["id"]
+    fail_body = _wait_for_terminal(api_client, fail_scan_id)
+    assert fail_body["status"] == "failed", fail_body
+
+    deadline = time.monotonic() + 10.0
+    while _scan_dir_exists_in_worker(fail_scan_id) and time.monotonic() < deadline:
+        time.sleep(0.5)
+    assert not _scan_dir_exists_in_worker(fail_scan_id), (
+        f"after a failed scan, /tmp/zynksec-scans/{fail_scan_id}/ still "
+        "exists in the code-worker container — even the error path must "
+        "wipe the per-scan tempdir"
+    )

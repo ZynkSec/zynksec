@@ -186,8 +186,13 @@ def clone_shallow(
         # A retried scan collides on the same scan_id.  Wipe the
         # previous tree and start fresh; gitleaks doesn't do
         # incremental scans on a retry, so the clean slate is
-        # the right behaviour.
-        shutil.rmtree(target, ignore_errors=True)
+        # the right behaviour.  We also nuke any sibling files at
+        # ``root/`` (e.g. a stale ``gitleaks.json`` left by an
+        # earlier run on this scan_id) so the post-teardown
+        # invariant "nothing under ``root/`` outlives the scan"
+        # holds across retries.
+        shutil.rmtree(root, ignore_errors=True)
+        root = _scan_root(scan_id)
 
     cmd = [
         "git",
@@ -230,10 +235,10 @@ def clone_shallow(
             },
         )
     except subprocess.TimeoutExpired as exc:
-        shutil.rmtree(target, ignore_errors=True)
+        shutil.rmtree(root, ignore_errors=True)
         raise CloneError(f"git clone timed out after {timeout_s}s") from exc
     except subprocess.CalledProcessError as exc:
-        shutil.rmtree(target, ignore_errors=True)
+        shutil.rmtree(root, ignore_errors=True)
         # Last line of stderr is usually git's own "fatal: ..." —
         # informative without including the full transport noise.
         last = (exc.stderr or "").strip().splitlines()
@@ -245,12 +250,20 @@ def clone_shallow(
     try:
         yield handle
     finally:
-        # Best-effort: a half-cleaned directory on a teardown crash
-        # gets swept up the next time the scan_id reuses the path,
-        # plus operators can ``rm -rf /tmp/zynksec-scans`` between
-        # runs.  Failing the scan over a teardown error would mask
-        # an otherwise-successful scan.
+        # Nuke the entire per-scan root, not just the cloned-repo
+        # subdirectory.  Sibling files written under ``root/`` —
+        # most notably the ``gitleaks.json`` report the plugin drops
+        # at ``root/gitleaks.json`` — contain plaintext ``Match`` /
+        # ``Secret`` fields and would otherwise persist forever in
+        # ``/tmp/zynksec-scans/<scan_id>/`` after the scan completes.
+        # Removing ``root`` is the single source of truth for "this
+        # scan is done, drop everything."
+        #
+        # Best-effort: a teardown crash is logged but swallowed —
+        # failing the scan over an rmtree blip would mask an
+        # otherwise-successful scan.  Operators can always
+        # ``rm -rf /tmp/zynksec-scans`` between runs.
         try:
-            shutil.rmtree(target, ignore_errors=True)
+            shutil.rmtree(root, ignore_errors=True)
         except Exception as exc:  # noqa: BLE001 — best-effort cleanup
-            _log.warning("repo.clone.teardown_failed", error=str(exc), path=str(target))
+            _log.warning("repo.clone.teardown_failed", error=str(exc), path=str(root))
