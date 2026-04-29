@@ -8,9 +8,59 @@
 #   docker compose \
 #     -f docker-compose.yml \
 #     -f tests/integration/docker-compose.test.yml \
-#     --profile dev up -d postgres redis worker1 worker2 api mailpit zap1 zap2
+#     --profile dev up -d postgres redis worker1 worker2 api code-worker \
+#     gitfixture mailpit zap1 zap2
+#
+# Phase 3 Sprint 1 additions:
+#   * ``gitfixture`` — bare-repo HTTP server with three planted
+#     secrets, addressed as ``http://gitfixture/vulnerable-repo.git``
+#     from the code-worker.
+#   * Test-mode env-var overrides on the API + code-worker so
+#     ``zynksec_scanners.repo.cloner.validate_clone_url`` accepts
+#     the in-cluster fixture host.  Production deployments don't
+#     set these vars — the cloner defaults to https + github /
+#     gitlab / bitbucket only.
 
 services:
   postgres:
     ports:
       - "55432:5432"
+
+  api:
+    environment:
+      ZYNKSEC_CLONE_ALLOWED_HOSTS: gitfixture
+      ZYNKSEC_CLONE_ALLOWED_SCHEMES: http,https
+
+  code-worker:
+    environment:
+      WORKER_FAMILY: code
+      ZYNKSEC_CLONE_ALLOWED_HOSTS: gitfixture
+      ZYNKSEC_CLONE_ALLOWED_SCHEMES: http,https
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      gitfixture:
+        condition: service_started
+
+  gitfixture:
+    build:
+      # Context = repo root.  Compose resolves ``context: .`` against
+      # the directory that compose was invoked from (the integration
+      # suite + CI both run compose from repo root, matching the rest
+      # of the stack's services); the canonical
+      # ``docker-compose.yml`` services do the same.
+      context: .
+      dockerfile: tests/fixtures/gitfixture.Dockerfile
+    image: zynksec/gitfixture:test
+    container_name: zynksec-gitfixture
+    restart: unless-stopped
+    networks:
+      - zynksec-core
+      - zynksec-scan
+# Networks (zynksec-core, zynksec-scan) come from the canonical
+# docker-compose.yml; redeclaring them here would override the base
+# ``internal:`` flags when compose merges the file chain (see the
+# block-comment at the bottom of ``target-lab/compose-targets.yml``
+# for the same pattern + reasoning).

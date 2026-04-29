@@ -270,20 +270,31 @@ def test_scan_group_partial_failure_when_one_child_target_kind_unsupported(
     api_client: httpx.Client,
     db_session: Session,
 ) -> None:
-    """Mix one ``web_app`` Target and one ``repo`` Target; the ZapPlugin
-    rejects ``kind=repo`` (``supports()`` returns False) so that child
+    """Mix one ``web_app`` Target and one ``api`` Target; the ZapPlugin
+    rejects ``kind=api`` (``supports() = {"web_app"}``) so that child
     fails fast.  Group should end ``partial_failure`` with summary
-    ``{completed: 1, failed: 1}``."""
+    ``{completed: 1, failed: 1}``.
+
+    Phase 3 Sprint 1 note: this test originally used ``kind=repo`` to
+    trigger the ZapPlugin's unsupported-kind path, but ``repo`` now
+    routes to the gitleaks code-worker and runs successfully against
+    a properly-formed Target.  ``api`` is the next-best
+    "still-unsupported by ZapPlugin" kind — its dispatch routes to
+    the ZAP family (``api`` Targets share the ZAP queue per the
+    canonical registry) but the plugin's
+    ``supported_target_kinds={"web_app"}`` rejects it before any ZAP
+    API call.  Same partial-failure semantics, no regression.
+    """
     web = _create_target(
         api_client,
         url="http://juice-shop:3000/rest/products/search?q=apple",
     )
-    # ``kind=repo`` is allowed by Pydantic + ORM, but the plugin's
+    # ``kind=api`` is allowed by Pydantic + ORM, but the plugin's
     # ``supported_target_kinds = {"web_app"}`` rejects it before any
     # ZAP API call — fast deterministic failure.
     repo = _create_target(
         api_client,
-        kind="repo",
+        kind="api",
         url="http://juice-shop:3000/",
     )
 
@@ -512,7 +523,10 @@ def test_scan_group_partial_failure_runs_in_parallel(
     )
     repo = _create_target(
         api_client,
-        kind="repo",
+        # See ``test_scan_group_partial_failure_when_one_child_target_kind_unsupported``
+        # for why ``kind=api`` rather than ``kind=repo`` (the latter
+        # now routes to gitleaks and would succeed).
+        kind="api",
         url="http://juice-shop:3000/",
     )
     response = api_client.post(

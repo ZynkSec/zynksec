@@ -176,8 +176,8 @@ jobs:
             -f target-lab/compose-targets.yml \
             -f tests/integration/docker-compose.test.yml \
             --profile dev --profile lab \
-            up -d postgres redis worker1 worker2 api mailpit zap1 zap2 \
-            juice-shop dvwa-db dvwa dvwa-init
+            up -d postgres redis worker1 worker2 code-worker api mailpit \
+            zap1 zap2 juice-shop dvwa-db dvwa dvwa-init gitfixture
       - name: Wait for ZAP + juice-shop + DVWA to report healthy
         run: |
           set -euo pipefail
