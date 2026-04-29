@@ -243,14 +243,15 @@ def test_scan_group_with_duplicate_target_ids_returns_canonical_422(
     assert body["request_id"]
 
 
-def test_scan_group_with_empty_target_ids_returns_pydantic_422(
+def test_scan_group_with_empty_target_ids_returns_canonical_422(
     api_client: httpx.Client,
 ) -> None:
-    """Empty list → Pydantic 422 (default ``{"detail": [...]}`` shape).
+    """Empty list → Pydantic ``min_length=1`` rejection.
 
-    The prompt explicitly calls for the Pydantic ``min_length=1``
-    treatment on this case, distinct from the canonical envelope
-    used for unknown / duplicate ids.
+    Phase 2 debt-paydown: every 4xx now carries the canonical
+    envelope (CLAUDE.md §4), including Pydantic-driven validation
+    failures.  The original error list is preserved under
+    ``details.errors``.
     """
     response = api_client.post(
         "/api/v1/scan-groups",
@@ -258,8 +259,11 @@ def test_scan_group_with_empty_target_ids_returns_pydantic_422(
     )
     assert response.status_code == 422, response.text
     body = response.json()
-    detail = body["detail"]
-    assert any("target_ids" in str(err.get("loc", ())) for err in detail), body
+    assert body["code"] == "request_validation_error"
+    assert body["message"]
+    assert body["request_id"]
+    errors = body["details"]["errors"]
+    assert any("target_ids" in str(err.get("loc", ())) for err in errors), body
 
 
 def test_scan_group_partial_failure_when_one_child_target_kind_unsupported(

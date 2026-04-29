@@ -15,7 +15,7 @@ import structlog
 from fastapi import HTTPException, status
 
 
-def _current_correlation_id() -> str | None:
+def current_correlation_id() -> str | None:
     """Pull the correlation id bound by ``CorrelationIdMiddleware``.
 
     The error-response body still exposes it under the ``request_id``
@@ -39,7 +39,7 @@ class ZynksecError(HTTPException):
         body: dict[str, Any] = {
             "code": self.code,
             "message": message,
-            "request_id": _current_correlation_id(),
+            "request_id": current_correlation_id(),
         }
         if details is not None:
             body["details"] = details

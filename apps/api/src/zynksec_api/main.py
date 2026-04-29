@@ -14,13 +14,15 @@ import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 
 import structlog
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, Request, Response, status
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from zynksec_api import __version__
 from zynksec_api.config import get_settings
-from zynksec_api.exceptions import ZynksecError
+from zynksec_api.exceptions import ZynksecError, current_correlation_id
 from zynksec_api.logging_config import configure_logging
 from zynksec_api.routers import health, scan_groups, scans, targets
 
@@ -87,6 +89,38 @@ def _zynksec_error_handler(request: Request, exc: ZynksecError) -> JSONResponse:
     return JSONResponse(exc.detail, status_code=exc.status_code)
 
 
+def _request_validation_error_handler(
+    request: Request,
+    exc: RequestValidationError,
+) -> JSONResponse:
+    """Phase 2 debt-paydown: Pydantic validation errors used to bypass
+    the canonical envelope and surface as FastAPI's default
+    ``{"detail": [...]}`` shape, breaking the CLAUDE.md §4 contract
+    that every 4xx body has the same four keys.
+
+    Map every ``RequestValidationError`` to ``{code, message,
+    request_id, details: {errors: [...]}}`` — same code for every
+    instance (clients branch on the static identifier, not on
+    field-level message strings) and the original Pydantic error
+    list preserved verbatim under ``details.errors`` for clients
+    that want field-level info.  Status stays 422 — FastAPI's
+    default for this exception, which matches the canonical
+    422 used elsewhere for validation failures.
+
+    ``jsonable_encoder`` flattens any non-JSON values (bytes,
+    exception instances) Pydantic might embed in ``ctx`` — that's
+    what FastAPI's default handler does too.
+    """
+    del request  # unused; interface demanded by FastAPI
+    body = {
+        "code": "request_validation_error",
+        "message": "request body or parameters failed validation",
+        "request_id": current_correlation_id(),
+        "details": {"errors": jsonable_encoder(exc.errors())},
+    }
+    return JSONResponse(body, status_code=status.HTTP_422_UNPROCESSABLE_ENTITY)
+
+
 def create_app() -> FastAPI:
     app = FastAPI(
         title="Zynksec API",
@@ -95,6 +129,10 @@ def create_app() -> FastAPI:
     )
     app.add_middleware(CorrelationIdMiddleware)
     app.add_exception_handler(ZynksecError, _zynksec_error_handler)  # type: ignore[arg-type]
+    app.add_exception_handler(
+        RequestValidationError,
+        _request_validation_error_handler,  # type: ignore[arg-type]
+    )
 
     app.include_router(health.router)
     app.include_router(scans.router)
