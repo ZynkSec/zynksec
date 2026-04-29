@@ -70,6 +70,18 @@ class Scan(Base):
         nullable=True,
     )
     scan_group: Mapped[ScanGroup | None] = relationship("ScanGroup")
+    # Phase 2 Sprint 3: Celery queue this scan was dispatched to
+    # (``zap_q_1`` / ``zap_q_2`` / ...).  Set at enqueue time by the
+    # API's round-robin assignment; null on rows created before
+    # Sprint 3 (no backfill).  Free-form short string, not an ENUM,
+    # so bumping ``ZAP_INSTANCE_COUNT`` doesn't need an ``ALTER TYPE``.
+    # No index — the column is informational (audits + integration
+    # tests assert distribution); we never filter on it in the hot path.
+    assigned_queue: Mapped[str | None] = mapped_column(
+        String(32),
+        nullable=True,
+        default=None,
+    )
     # Stored as a free-form short string rather than a Postgres ENUM so
     # adding profiles in future sprints (Sprint 2: SAFE_ACTIVE,
     # Sprint 3: AGGRESSIVE) doesn't need a Postgres ALTER TYPE — the

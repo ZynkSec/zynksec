@@ -30,11 +30,22 @@ Zynksec is the tool a solo founder, a small team, or a security-curious develope
 
 ### Prerequisites
 
-- Docker Desktop (or any Compose-capable runtime), with **6 GiB of
-  free RAM available to the ZAP container** (the AGGRESSIVE profile
-  asks for it, and the cgroup is shared across all profiles). Default
-  Docker Desktop allocates 4-8 GiB to its VM; check via
-  `docker system info | grep -i memory`.
+- Docker Desktop (or any Compose-capable runtime). Phase 2 Sprint 3
+  runs **two ZAP containers in parallel** (`zap1` + `zap2`), each
+  with a 6 GiB cgroup at the canonical caps — so the Docker VM
+  wants:
+  - **≥ 14 GiB** for the canonical caps (production / CI default).
+  - **≥ 12 GiB** if you copy the dev memory-relief stanza from
+    `docker-compose.override.example.yml` into a local
+    `docker-compose.override.yml` (gitignored), which lowers each
+    ZAP to 4 GiB / `-Xmx2500m`. Enough for PASSIVE + SAFE_ACTIVE
+    against juice-shop; AGGRESSIVE under load still wants the full
+    6 GiB. See
+    [`docs/architecture/zap-resource-tuning.md`](docs/architecture/zap-resource-tuning.md)
+    for the math.
+
+  Check the VM allocation via `docker system info | grep -i memory`.
+
 - `uv` for Python work, `pnpm` for the Next.js workspace.
 
 Zynksec runs locally via Docker Compose. Three named startup modes

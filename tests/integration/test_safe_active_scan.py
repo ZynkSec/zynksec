@@ -67,12 +67,21 @@ class _ZapMemorySampler:
     Runs ``docker stats --no-stream`` every 2 s during the scan and
     tracks the peak ``MemUsage`` reading.  Cheap (subprocess + parse;
     no docker SDK dependency) and good enough for "did SAFE_ACTIVE
-    push us close to the 2 GiB cap" forensics in the paste-back report.
+    push us close to the cap" forensics in the paste-back report.
+
+    Phase 2 Sprint 3: ZAP is multi-instance.  The scan lands on
+    exactly one of zynksec-zap1 / zynksec-zap2 — we don't know which
+    in advance — so poll all containers and track the max across them.
+    The idle ZAP sits near 100 MiB and won't perturb the peak.
     """
 
-    def __init__(self, container: str = "zynksec-zap", interval_s: float = 2.0) -> None:
+    def __init__(
+        self,
+        containers: tuple[str, ...] = ("zynksec-zap1", "zynksec-zap2"),
+        interval_s: float = 2.0,
+    ) -> None:
         self.peak_mib: float = 0.0
-        self._container = container
+        self._containers = containers
         self._interval_s = interval_s
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -95,7 +104,7 @@ class _ZapMemorySampler:
             "--no-stream",
             "--format",
             "{{.MemUsage}}",
-            self._container,
+            *self._containers,
         ]
         while not self._stop.is_set():
             try:
@@ -106,9 +115,12 @@ class _ZapMemorySampler:
                     text=True,
                     timeout=5.0,
                 )
-                value = self._parse_mib(result.stdout)
-                if value > self.peak_mib:
-                    self.peak_mib = value
+                # docker stats with N containers prints N lines —
+                # parse each, take the max.
+                for line in result.stdout.splitlines():
+                    value = self._parse_mib(line)
+                    if value > self.peak_mib:
+                        self.peak_mib = value
             except subprocess.TimeoutExpired:
                 pass  # transient slow stats call, just retry
             self._stop.wait(self._interval_s)

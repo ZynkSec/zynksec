@@ -30,8 +30,12 @@ repos:
         args: ["--fix"]
 
   # ---------- Python — black (formatter; runs in CI too) ----------
+  # Keep this rev in lock-step with pyproject.toml's dev-dep pin
+  # (``black>=26.3.1,<27``); CI uses ``uv run black --check`` and
+  # any drift between the two surfaces as a CI failure on a
+  # stylistic rule that pre-commit silently accepted locally.
   - repo: https://github.com/psf/black
-    rev: 24.10.0
+    rev: 26.3.1
     hooks:
       - id: black
 

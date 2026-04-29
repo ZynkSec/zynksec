@@ -24,7 +24,15 @@ from zynksec_db import Scan
 # a no-op task; Week 3's worker does real ZAP work so it spends a
 # bit longer in ``queued`` and ``running``.  We only need to see the
 # transition out of ``queued`` to prove the pipe.
-_POLL_BUDGET_S = 30.0
+#
+# Phase 2 Sprint 3: the suite now creates many scans across both
+# per-pair queues, and a legacy single-scan POST can land queued
+# behind another scan that's still draining on the same queue.
+# 90 s gives the prior scan room to finish under CI memory pressure
+# without giving up the smoke-check character of this test (the poll
+# exits as soon as the status flips, so a healthy stack still
+# returns in seconds).
+_POLL_BUDGET_S = 90.0
 _POLL_INTERVAL_S = 0.5
 
 

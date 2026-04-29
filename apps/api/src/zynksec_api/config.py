@@ -63,9 +63,16 @@ class Settings(BaseSettings):
     celery_result_backend: str = "redis://redis:6379/2"
 
     # ---------- ZAP ----------
-    zap_api_url: str = "http://zap:8090"
+    # Phase 2 Sprint 3: multi-instance fan-out.  ``zap_api_url`` is the
+    # API process's reference to the *first* ZAP instance — only used
+    # for boot-time diagnostics; per-scan dispatch goes through Celery
+    # queues, not direct HTTP from the API to ZAP.  ``zap_instance_count``
+    # is authoritative for "how many ZAP+worker pairs exist" and drives
+    # the round-robin queue assignment in ``celery_client``.
+    zap_api_url: str = "http://zap1:8090"
     zap_api_key: SecretStr = SecretStr("changeme-local-only")
     zap_default_profile: str = "baseline"
+    zap_instance_count: int = Field(default=2, ge=1)
 
     # ---------- Mailpit (dev only) ----------
     smtp_host: str = "mailpit"

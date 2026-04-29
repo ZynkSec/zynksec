@@ -118,7 +118,19 @@ ignore_missing_imports = true
 # ``RUN_AGGRESSIVE_TESTS=1`` env-var skip together gate the long-
 # running AGGRESSIVE integration test from default ``pytest`` runs
 # (it takes 5-15 min and wants 5 GiB of free host RAM).
+#
+# ``aggressive_parallel`` is the Phase 2 Sprint 3 cousin: any test
+# that combines AGGRESSIVE scans with multi-instance fan-out (two
+# concurrent ZAPs each driving a HIGH/LOW policy) wants headroom that
+# the dev memory-relief override (4 GiB / -Xmx2500m per ZAP) can't
+# safely provide.  Tests carrying this marker MUST also gate on
+# ``RUN_AGGRESSIVE_PARALLEL_TESTS=1``; PASSIVE and SAFE_ACTIVE
+# multi-instance tests run unconditionally on the dev override.
+# No test wears this marker yet — it's registered now so future
+# Sprint-3 follow-ups have a place to plug in without re-litigating
+# the gate.
 [tool.pytest.ini_options]
 markers = [
   "aggressive: opt-in AGGRESSIVE scan test (set RUN_AGGRESSIVE_TESTS=1, requires 5 GiB free RAM, ~5-15 min)",
+  "aggressive_parallel: opt-in AGGRESSIVE + multi-instance test (set RUN_AGGRESSIVE_PARALLEL_TESTS=1, requires both ZAPs at full 6 GiB cgroup, ~10-20 min)",
 ]

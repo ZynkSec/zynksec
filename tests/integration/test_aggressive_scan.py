@@ -119,16 +119,21 @@ def _compose(*args: str) -> list[str]:
     ]
 
 
-def _logs_since(service: str, elapsed_s: float) -> str:
-    """Tail a compose service's logs going back ``elapsed_s`` seconds.
+def _logs_since(service: str | tuple[str, ...], elapsed_s: float) -> str:
+    """Tail one-or-many compose services' logs going back ``elapsed_s``s.
 
     Mirrors the helper in ``test_correlation_id_propagation.py`` —
     docker's ``--since`` is wall-clock so we add a 5 s cushion to
     cover monotonic-vs-wall drift over a long AGGRESSIVE run.
+
+    Phase 2 Sprint 3: accept a tuple of service names so callers can
+    grab the merged worker1/worker2 stream (the scan is routed to one
+    of them by the rotation cursor — we don't know which in advance).
     """
     window = max(1, int(elapsed_s) + 5)
+    services = (service,) if isinstance(service, str) else service
     result = subprocess.run(  # noqa: S603 — list-form, no user input
-        _compose("logs", "--no-color", f"--since={window}s", service),
+        _compose("logs", "--no-color", f"--since={window}s", *services),
         cwd=str(_REPO_ROOT),
         check=False,
         capture_output=True,
@@ -142,11 +147,21 @@ class _ZapMemorySampler:
 
     Same shape as Sprint 2's sampler — duplicated rather than shared
     because each test stays self-contained and the sampler is small.
+
+    Phase 2 Sprint 3: ZAP is now multi-instance.  The scan lands on
+    exactly one of zynksec-zap1 / zynksec-zap2 (the rotation cursor
+    decides), but we don't know which at sample-start time, so we
+    poll all containers and track the max across all of them — the
+    idle ZAP sits near 100 MiB so it doesn't perturb the peak.
     """
 
-    def __init__(self, container: str = "zynksec-zap", interval_s: float = 5.0) -> None:
+    def __init__(
+        self,
+        containers: tuple[str, ...] = ("zynksec-zap1", "zynksec-zap2"),
+        interval_s: float = 5.0,
+    ) -> None:
         self.peak_mib: float = 0.0
-        self._container = container
+        self._containers = containers
         self._interval_s = interval_s
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -166,7 +181,7 @@ class _ZapMemorySampler:
             "--no-stream",
             "--format",
             "{{.MemUsage}}",
-            self._container,
+            *self._containers,
         ]
         while not self._stop.is_set():
             try:
@@ -177,9 +192,12 @@ class _ZapMemorySampler:
                     text=True,
                     timeout=5.0,
                 )
-                value = self._parse_mib(result.stdout)
-                if value > self.peak_mib:
-                    self.peak_mib = value
+                # docker stats with N containers prints N lines —
+                # parse each, take the max.
+                for line in result.stdout.splitlines():
+                    value = self._parse_mib(line)
+                    if value > self.peak_mib:
+                        self.peak_mib = value
             except subprocess.TimeoutExpired:
                 pass  # transient — retry next interval
             self._stop.wait(self._interval_s)
@@ -193,12 +211,13 @@ class _ZapMemorySampler:
         self._thread.join(timeout=10.0)
 
 
-def _zap_cgroup_gib(container: str = "zynksec-zap") -> float:
+def _zap_cgroup_gib(container: str = "zynksec-zap1") -> float:
     """Return ZAP container's cgroup memory limit in GiB, or 0.0 if absent.
 
     Used by the per-test skip gate so a contributor whose compose
     still has the 2 GiB cap doesn't OOM their machine running the
-    AGGRESSIVE test.
+    AGGRESSIVE test.  Phase 2 Sprint 3: zap1 and zap2 share the same
+    config via the YAML anchor, so inspecting one is sufficient.
     """
     cmd = ["docker", "inspect", "--format", "{{.HostConfig.Memory}}", container]
     try:
@@ -307,7 +326,9 @@ def test_post_scan_with_aggressive_finds_more_than_safe_active(
     # executed.  A regression that silently falls through to
     # SAFE_ACTIVE for AGGRESSIVE requests would fail this even with a
     # passing count assertion.
-    worker_logs = _logs_since("worker", elapsed_s)
+    # Multi-instance ZAP: scan landed on exactly one of worker1/worker2;
+    # harvest both streams so we don't miss the policy-applied event.
+    worker_logs = _logs_since(("worker1", "worker2"), elapsed_s)
     aggressive_policy_applied = [
         line
         for line in worker_logs.splitlines()

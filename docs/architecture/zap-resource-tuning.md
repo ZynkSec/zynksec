@@ -13,7 +13,7 @@ If `Xmx` sits above ~70 % of `mem_limit`, the kernel SIGKILLs the JVM before it 
 
 ## What's being tuned
 
-ZAP runs as a Java daemon inside the `zynksec-zap` container. Two separate ceilings cap its memory:
+ZAP runs as a Java daemon inside the `zynksec-zap1` / `zynksec-zap2` containers (Phase 2 Sprint 3 — both share the same `&zap_base` config in `docker-compose.yml`, so the numbers below apply to each). Two separate ceilings cap each container's memory:
 
 1. **The cgroup ceiling.** `mem_limit` in `docker-compose.yml`. Enforced by the host kernel's memory cgroup controller. When the container's RSS hits this number, the kernel OOM killer fires and SIGKILLs whichever process inside the cgroup is using the most memory (almost always `java`). No graceful exit, no Java stack trace, no `OutOfMemoryError`.
 

@@ -1,9 +1,59 @@
 # Copy to docker-compose.override.yml (gitignored) to customise your
 # local stack without touching the canonical docker-compose.yml.
 # Uncomment the stanzas you want.
+#
+# Phase 2 Sprint 3: the dev memory-relief stanza below lowers each
+# ZAP cgroup from 6 GiB to 4 GiB so the two-ZAP fan-out fits on a
+# Docker VM around 12 GiB.  Production / CI keep the unmodified
+# 6 GiB / -Xmx3500m caps from docker-compose.yml — 4 GiB is enough
+# for PASSIVE and SAFE_ACTIVE scans against juice-shop but is the
+# documented floor (-Xmx2500m + ~500 MiB non-heap), so AGGRESSIVE
+# under load should run on a host that can give each ZAP the full
+# 6 GiB.  See docs/architecture/zap-resource-tuning.md for the math.
+#
+# `command:` is a list, so compose REPLACES rather than merges it —
+# every override below repeats the full ZAP CLI from docker-compose.yml
+# with only ``-Xmx`` changed, so no flags drift on copy.
 
 # services:
-#   # Hot-reload the API on source changes (rebuild-free iteration).
+#   # ----- Dev memory relief: 4 GiB / -Xmx2500m per ZAP (uncomment to enable) -----
+#   zap1:
+#     mem_limit: 4g
+#     memswap_limit: 4g
+#     command:
+#       - zap.sh
+#       - -Xmx2500m
+#       - -daemon
+#       - -host
+#       - 0.0.0.0
+#       - -port
+#       - "8090"
+#       - -config
+#       - api.addrs.addr.name=.*
+#       - -config
+#       - api.addrs.addr.regex=true
+#       - -config
+#       - api.key=${ZAP_API_KEY}
+#
+#   zap2:
+#     mem_limit: 4g
+#     memswap_limit: 4g
+#     command:
+#       - zap.sh
+#       - -Xmx2500m
+#       - -daemon
+#       - -host
+#       - 0.0.0.0
+#       - -port
+#       - "8090"
+#       - -config
+#       - api.addrs.addr.name=.*
+#       - -config
+#       - api.addrs.addr.regex=true
+#       - -config
+#       - api.key=${ZAP_API_KEY}
+#
+#   # ----- Hot-reload the API on source changes (rebuild-free iteration). -----
 #   api:
 #     command: ["uvicorn", "zynksec_api.main:app", "--host", "0.0.0.0",
 #               "--port", "8000", "--reload"]
@@ -12,14 +62,14 @@
 #       - ./packages/shared-schema/src:/app/packages/shared-schema/src:ro
 #       - ./packages/scanners/src:/app/packages/scanners/src:ro
 #
-#   # Publish Postgres on the host so `psql` works from outside Docker.
+#   # ----- Publish Postgres on the host so `psql` works from outside Docker. -----
 #   # Not enabled by default — CLAUDE.md §17 keeps the DB off the host
 #   # port namespace in the canonical compose.
 #   postgres:
 #     ports:
 #       - "55432:5432"
 #
-#   # Publish Redis on the host (for `redis-cli` from outside Docker).
+#   # ----- Publish Redis on the host (for `redis-cli` from outside Docker). -----
 #   redis:
 #     ports:
 #       - "6379:6379"

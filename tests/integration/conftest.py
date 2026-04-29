@@ -119,8 +119,11 @@ def _wait_for_container_healthy(container: str, timeout_s: int) -> None:
 
 @pytest.fixture(scope="session", autouse=True)
 def _compose_up() -> Iterator[None]:
-    """Bring up the full Week-3 stack (api + worker + zap + juice-shop)
-    for the whole test session.  Leading underscore satisfies PT004.
+    """Bring up the full stack (api + worker1/worker2 + zap1/zap2 +
+    juice-shop) for the whole test session.  Leading underscore
+    satisfies PT004.  Phase 2 Sprint 3 introduced the multi-instance
+    ZAP topology — each worker pins to one ZAP daemon and consumes
+    from one Celery queue (zap_q_1 / zap_q_2).
     """
 
     if not _KEEP_STACK:
@@ -131,17 +134,20 @@ def _compose_up() -> Iterator[None]:
                 "--build",
                 "postgres",
                 "redis",
-                "worker",
+                "worker1",
+                "worker2",
                 "api",
                 "mailpit",
-                "zap",
+                "zap1",
+                "zap2",
                 "juice-shop",
             )
         )
 
     try:
         _wait_for_api(timeout_s=_API_READY_TIMEOUT_S)
-        _wait_for_container_healthy("zynksec-zap", timeout_s=_ZAP_READY_TIMEOUT_S)
+        _wait_for_container_healthy("zynksec-zap1", timeout_s=_ZAP_READY_TIMEOUT_S)
+        _wait_for_container_healthy("zynksec-zap2", timeout_s=_ZAP_READY_TIMEOUT_S)
         _wait_for_container_healthy("zynksec-juice-shop", timeout_s=_ZAP_READY_TIMEOUT_S)
         # Apply migrations (idempotent — CI also runs this).
         _run(

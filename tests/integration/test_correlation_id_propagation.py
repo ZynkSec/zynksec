@@ -71,12 +71,20 @@ def _poll_until_completed(client: httpx.Client, scan_id: str) -> dict[str, Any]:
     )
 
 
-def _logs_since(service: str, elapsed_s: float) -> str:
-    """Tail a compose service's logs going back ``elapsed_s`` seconds."""
+def _logs_since(service: str | tuple[str, ...], elapsed_s: float) -> str:
+    """Tail one-or-many compose services' logs going back ``elapsed_s``s.
+
+    Phase 2 Sprint 3 introduced the multi-instance topology, so the
+    "worker" stream is now the union of ``worker1`` + ``worker2``.
+    Accept either a bare service name (legacy ``"api"``) or a tuple
+    of names which are forwarded as positional args to ``compose
+    logs`` — compose merges them into one chronological stream.
+    """
     # +5 s cushion — docker's --since is clock-wall, ours is monotonic.
     window = max(1, int(elapsed_s) + 5)
+    services = (service,) if isinstance(service, str) else service
     result = subprocess.run(  # noqa: S603 — list-form, no user input
-        _compose("logs", "--no-color", f"--since={window}s", service),
+        _compose("logs", "--no-color", f"--since={window}s", *services),
         cwd=str(_REPO_ROOT),
         check=False,
         capture_output=True,
@@ -116,7 +124,10 @@ def test_correlation_id_propagates_api_to_celery_to_scanner(
     # event prefix that only ZapPlugin / ZapClient use.
     elapsed = time.monotonic() - test_start
     api_logs = _logs_since("api", elapsed)
-    worker_logs = _logs_since("worker", elapsed)
+    # Multi-instance ZAP: scan is routed to one of N workers via the
+    # legacy-path rotation cursor.  We don't know in advance which one
+    # ran the task, so harvest both worker streams.
+    worker_logs = _logs_since(("worker1", "worker2"), elapsed)
 
     assert correlation_id in api_logs, (
         f"correlation_id {correlation_id} not found in api logs — middleware did not "

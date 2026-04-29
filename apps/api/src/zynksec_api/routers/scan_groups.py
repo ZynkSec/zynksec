@@ -1,7 +1,7 @@
 """ScanGroup CRUD — POST + GET-one + GET-list on /api/v1/scan-groups.
 
-Phase 2 Sprint 2: one API call enqueues a multi-target scan
-request.  The handler:
+Phase 2 Sprint 2 / Sprint 3: one API call enqueues a multi-target
+scan request.  The handler:
 
     1. Validates that all ``target_ids`` exist and belong to the
        same project (resolved from the first Target's project, or
@@ -10,11 +10,16 @@ request.  The handler:
        envelope — no partial group.
     2. Persists the parent ScanGroup + N child Scan rows in a
        single transaction so the atomicity invariant holds: a
-       caller that gets a 4xx never sees orphaned children.
-    3. Enqueues one ``scan_group.process`` Celery task carrying
-       just the group's id.  The worker picks it up, marks
-       running, and iterates children serially (Sprint-2
-       constraint: worker concurrency stays at 1).
+       caller that gets a 4xx never sees orphaned children.  Each
+       child is assigned a per-pair Celery queue (``zap_q_1`` /
+       ``zap_q_2`` / ...) round-robin so children of the same group
+       fan out across ZAP instances.
+    3. Enqueues one ``scan.run`` Celery task per child, each
+       routed to its assigned queue.  Sprint 3 collapsed the
+       umbrella ``scan_group.process`` task — children execute in
+       parallel on whichever worker pair owns their queue, and
+       roll up the parent group atomically when the last child
+       terminates (last-child-wins, no coordinator).
 
 Reading a group: ``GET /api/v1/scan-groups/{id}`` returns the row
 plus a summary computed on-the-fly from the child Scans, so the
@@ -42,9 +47,10 @@ from zynksec_db import (
     ScanRepository,
     Target,
 )
-from zynksec_schema import ScanProfile
+from zynksec_schema import ScanProfile, zap_queue_for_index
 
-from zynksec_api.celery_client import enqueue_scan_group
+from zynksec_api.celery_client import enqueue_scan_to_queue
+from zynksec_api.config import get_settings
 from zynksec_api.db import get_session
 from zynksec_api.exceptions import (
     DuplicateTargetIds,
@@ -216,10 +222,22 @@ def create_scan_group(
     )
     group_repo.add(session, group)
 
+    # Phase 2 Sprint 3: round-robin children across the per-pair
+    # queues.  Index ``i`` lands on ``zap_q_{(i % N) + 1}`` so a
+    # 2-target group with ``N=2`` distributes (zap_q_1, zap_q_2);
+    # a 3-target group with ``N=2`` lands (zap_q_1, zap_q_2, zap_q_1).
+    # Persisting ``assigned_queue`` on the child Scan row inside
+    # the same transaction means the queue selection is committed
+    # atomically with the child itself — no risk of an enqueue
+    # without a record, or a record without an enqueue.
+    n_instances = get_settings().zap_instance_count
+
     # Children created in request order so the worker's
     # ``created_at, id`` ordering reproduces it.
     children: list[Scan] = []
-    for target in targets:
+    child_queues: list[str] = []
+    for i, target in enumerate(targets):
+        queue = zap_queue_for_index((i % n_instances) + 1)
         child = Scan(
             project_id=project.id,
             target_url=target.url,
@@ -227,12 +245,21 @@ def create_scan_group(
             scan_group_id=group.id,
             scan_profile=body.scan_profile.value,
             status="queued",
+            assigned_queue=queue,
         )
         scan_repo.add(session, child)
         children.append(child)
+        child_queues.append(queue)
 
     session.commit()
-    enqueue_scan_group(str(group.id))
+
+    # Enqueue AFTER the commit so a worker that picks the task up
+    # mid-flight always finds a fully-persisted Scan row.  One task
+    # per child — the worker's ``execute_scan`` rolls up the parent
+    # group atomically when the last child terminates (Sprint 3:
+    # ``mark_terminal_if_all_children_done``).
+    for child, queue in zip(children, child_queues, strict=True):
+        enqueue_scan_to_queue(str(child.id), body.scan_profile.value, queue=queue)
 
     summary = ScanGroupSummary(
         total=len(children),

@@ -1,17 +1,20 @@
-"""Shared scan-execution helper used by ``scan.run`` and
-``scan_group.process``.
+"""Shared scan-execution helper used by ``scan.run``.
 
 Phase 2 Sprint 2: lifted out of ``tasks/scan.py`` so multi-target
 groups can iterate children through the same code path the
-single-scan task uses.  Single source of truth for "what does it
-mean to run one scan against one target" — both task entry points
-just thread the right primitive arguments in.
+single-scan task uses.
+
+Phase 2 Sprint 3: the ``scan_group.process`` task is gone — each
+child of a ScanGroup is now its own ``scan.run`` task on a per-pair
+Celery queue.  ``execute_scan`` performs the group rollup itself
+(``mark_running_if_queued`` on entry, ``mark_terminal_if_all_children_done``
+after the child's terminal status commits) so no coordinator task
+is needed.
 
 The helper is sync + blocking (matches Celery's prefork-pool model)
 and returns ``True`` on completion, ``False`` on failure.  The
-caller decides whether to propagate (single-scan task: re-raise so
-Celery sees the task as failed) or to swallow (group task:
-continue to the next child).
+``scan.run`` caller propagates the failure to Celery so retry / DLQ
+wiring can react.
 """
 
 from __future__ import annotations
@@ -25,13 +28,14 @@ from zynksec_db import Finding as FindingRow
 from zynksec_db import (
     FindingRepository,
     Scan,
+    ScanGroupRepository,
     ScanRepository,
     engine_from_url,
     make_session_factory,
 )
 from zynksec_scanners import ScannerPlugin, ScanTarget
 from zynksec_scanners.types import TargetKind
-from zynksec_schema import Finding, ScanProfile
+from zynksec_schema import Finding, ScanProfile, zap_queue_for_index
 
 from zynksec_worker.config import get_settings
 from zynksec_worker.runners import build_zap_plugin
@@ -40,6 +44,7 @@ _log = structlog.get_logger(__name__)
 
 _scan_repo = ScanRepository()
 _finding_repo = FindingRepository()
+_group_repo = ScanGroupRepository()
 
 
 @lru_cache(maxsize=1)
@@ -49,11 +54,11 @@ def session_factory() -> sessionmaker[Session]:
     return make_session_factory(engine)
 
 
-def _load_target(
+def _load_target_and_group_id(
     factory: sessionmaker[Session],
     scan_uuid: uuid.UUID,
     scan_profile: ScanProfile,
-) -> ScanTarget:
+) -> tuple[ScanTarget, uuid.UUID | None]:
     """Load the Scan row and construct a :class:`ScanTarget` for the plugin.
 
     When the Scan links to a persistent :class:`zynksec_db.Target`
@@ -62,6 +67,10 @@ def _load_target(
     reject unsupported kinds.  Legacy ``target_url``-only scans
     (``scan.target_id IS NULL``) keep the historical ``"web_app"``
     default — that path has no kind information to thread through.
+
+    Also returns the parent ``scan_group_id`` (or ``None`` for legacy
+    single-scan POSTs) so the caller can drive group-rollup hooks
+    without re-querying the Scan row.
     """
     with factory() as session:
         scan = session.get(Scan, scan_uuid)
@@ -69,13 +78,14 @@ def _load_target(
             raise RuntimeError(f"Scan {scan_uuid} vanished between enqueue and dispatch")
         target_row = scan.target  # eager-loaded via SQLAlchemy relationship
         kind: TargetKind = target_row.kind if target_row is not None else "web_app"  # type: ignore[assignment]
-        return ScanTarget(
+        target = ScanTarget(
             kind=kind,
             url=scan.target_url,
             project_id=scan.project_id,
             scan_id=scan.id,
             scan_profile=scan_profile,
         )
+        return target, scan.scan_group_id
 
 
 def _finding_to_row(finding: Finding) -> FindingRow:
@@ -127,6 +137,54 @@ def _mark(
             raise
 
 
+def _flip_group_running(
+    factory: sessionmaker[Session],
+    scan_group_uuid: uuid.UUID,
+) -> bool:
+    """Idempotent ``queued -> running`` for the parent ScanGroup.
+
+    Called by the first child to enter ``execute_scan``; subsequent
+    children no-op cleanly because :meth:`mark_running_if_queued`
+    only updates rows whose status is currently ``queued``.
+    """
+    with factory() as session:
+        try:
+            flipped = _group_repo.mark_running_if_queued(session, scan_group_uuid)
+            session.commit()
+            return flipped
+        except Exception:
+            session.rollback()
+            raise
+
+
+def _rollup_group_if_terminal(
+    factory: sessionmaker[Session],
+    scan_group_uuid: uuid.UUID,
+) -> str | None:
+    """Best-effort group-terminal promotion (last-child-wins).
+
+    Returns the terminal status the group settled at, or ``None`` if
+    the group still has non-terminal children (this child is not the
+    last) or was already terminal.  Errors are caught and logged so
+    a transient DB blip after the child's terminal mark doesn't
+    leave the child failed AND the group stuck — the next child to
+    finish will retry the rollup.
+    """
+    with factory() as session:
+        try:
+            terminal = _group_repo.mark_terminal_if_all_children_done(session, scan_group_uuid)
+            session.commit()
+            return terminal
+        except Exception as exc:
+            session.rollback()
+            _log.exception(
+                "scan.run.group_rollup_failed",
+                scan_group_id=str(scan_group_uuid),
+                error=str(exc),
+            )
+            return None
+
+
 def execute_scan(scan_uuid: uuid.UUID, profile: ScanProfile) -> bool:
     """Run one scan against one target end-to-end.
 
@@ -136,35 +194,63 @@ def execute_scan(scan_uuid: uuid.UUID, profile: ScanProfile) -> bool:
     and the failure logged via ``scan.run.failed``).
 
     May raise from the early-boundary calls — ``_mark(factory,
-    "running", ...)``, ``_load_target(...)``, or
+    "running", ...)``, ``_load_target_and_group_id(...)``, or
     ``build_zap_plugin(settings)`` — when DB connectivity or
     settings load fail before the inner ``try/except`` is reached.
-    The caller decides what to do with those:
+    ``scan.run`` lets the exception propagate so Celery records a
+    failed task (retry / DLQ wiring lives there).
 
-    * ``scan.run`` lets the exception propagate so Celery records
-      a failed task (retry / DLQ wiring lives there).
-    * ``scan_group.process`` wraps the call in defense-in-depth
-      ``try/except`` so a transient blip on one child doesn't
-      abort the whole group.
+    Phase 2 Sprint 3 group-rollup: if the Scan belongs to a
+    ScanGroup, the helper drives the parent's status transitions
+    inline — flips the group from ``queued`` to ``running`` on
+    entry (idempotent; only the first child wins the flip) and
+    promotes the group to its terminal status after the child's
+    own status commits (atomic last-child-wins via
+    ``mark_terminal_if_all_children_done``).  No coordinator task
+    is needed; per-child Celery tasks roll up the group on their own.
 
-    The Scan's ``scan_id`` is bound to structlog contextvars at
-    entry so every log line emitted while this child runs (the
-    plugin progress lines, finding-persist lines, status
-    transitions) carries it; the bound var is cleared in
-    ``finally`` — including on the propagating-exception path —
-    so a subsequent child in the same task doesn't inherit a
-    stale id.
+    Structlog bindings: ``scan_id`` always; ``scan_group_id`` when
+    set; ``zap_index`` + ``assigned_queue`` from worker config so
+    every log line carries the worker/ZAP pair the scan executed
+    on (debugging cross-pair regressions in Sprint 3+).  All
+    bindings are cleared in ``finally`` so the next task on this
+    worker doesn't inherit stale ids.
     """
     scan_id_str = str(scan_uuid)
     factory = session_factory()
     settings = get_settings()
 
-    structlog.contextvars.bind_contextvars(scan_id=scan_id_str)
+    # Worker-pair bindings stay constant for the lifetime of this
+    # process (the worker is pinned to one ZAP / one queue) but
+    # binding them per-task makes the JSON log lines self-contained
+    # — every entry advertises which pair produced it without the
+    # reader needing to correlate with worker startup logs.
+    zap_index = settings.worker_zap_index
+    assigned_queue = zap_queue_for_index(zap_index)
+
+    structlog.contextvars.bind_contextvars(
+        scan_id=scan_id_str,
+        zap_index=zap_index,
+        assigned_queue=assigned_queue,
+    )
+    bound_group_id = False
     try:
         _log.info("scan.run.start", scan_id=scan_id_str, scan_profile=profile.value)
+
+        target, scan_group_uuid = _load_target_and_group_id(factory, scan_uuid, profile)
+        if scan_group_uuid is not None:
+            structlog.contextvars.bind_contextvars(scan_group_id=str(scan_group_uuid))
+            bound_group_id = True
+            # First child to start the group flips queued -> running;
+            # subsequent children no-op cleanly inside the UPDATE.
+            if _flip_group_running(factory, scan_group_uuid):
+                _log.info(
+                    "scan_group.flipped_running",
+                    scan_group_id=str(scan_group_uuid),
+                )
+
         _mark(factory, "running", scan_uuid)
 
-        target = _load_target(factory, scan_uuid, profile)
         plugin: ScannerPlugin = build_zap_plugin(settings)
 
         if not plugin.supports(target):
@@ -175,6 +261,8 @@ def execute_scan(scan_uuid: uuid.UUID, profile: ScanProfile) -> bool:
                 kind=target.kind,
                 url=target.url,
             )
+            if scan_group_uuid is not None:
+                _maybe_log_group_terminal(scan_group_uuid, factory)
             return False
 
         context = None
@@ -204,6 +292,8 @@ def execute_scan(scan_uuid: uuid.UUID, profile: ScanProfile) -> bool:
 
             _mark(factory, "completed", scan_uuid)
             _log.info("scan.run.complete", scan_id=scan_id_str, findings=len(findings))
+            if scan_group_uuid is not None:
+                _maybe_log_group_terminal(scan_group_uuid, factory)
             return True
         except Exception as exc:
             _log.exception("scan.run.failed", scan_id=scan_id_str, error=str(exc))
@@ -215,6 +305,8 @@ def execute_scan(scan_uuid: uuid.UUID, profile: ScanProfile) -> bool:
                     scan_id=scan_id_str,
                     error=str(secondary),
                 )
+            if scan_group_uuid is not None:
+                _maybe_log_group_terminal(scan_group_uuid, factory)
             return False
         finally:
             if context is not None:
@@ -227,7 +319,31 @@ def execute_scan(scan_uuid: uuid.UUID, profile: ScanProfile) -> bool:
                         error=str(te),
                     )
     finally:
-        # Clear the per-child binding so subsequent log lines in
-        # the same Celery task (e.g. the next iteration of a
-        # ScanGroup) don't carry a stale scan_id.
-        structlog.contextvars.unbind_contextvars("scan_id")
+        # Clear per-task bindings so the next task on this worker
+        # doesn't inherit stale ids.  ``zap_index`` / ``assigned_queue``
+        # could in principle stay bound (they're constant for the
+        # process) but clearing them keeps the symmetry simple —
+        # ``task_prerun`` re-binds correlation_id from scratch on
+        # every task too.
+        keys = ["scan_id", "zap_index", "assigned_queue"]
+        if bound_group_id:
+            keys.append("scan_group_id")
+        structlog.contextvars.unbind_contextvars(*keys)
+
+
+def _maybe_log_group_terminal(
+    scan_group_uuid: uuid.UUID,
+    factory: sessionmaker[Session],
+) -> None:
+    """Run rollup; if this child was the last one, log the terminal status.
+
+    Pulled out so the three call sites (unsupported-target, success,
+    plugin failure) stay one-liners and don't accidentally diverge.
+    """
+    terminal = _rollup_group_if_terminal(factory, scan_group_uuid)
+    if terminal is not None:
+        _log.info(
+            "scan_group.flipped_terminal",
+            scan_group_id=str(scan_group_uuid),
+            terminal_status=terminal,
+        )
