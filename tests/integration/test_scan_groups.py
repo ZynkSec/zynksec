@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from collections import Counter
 
 import httpx
 import pytest
@@ -375,23 +376,23 @@ def test_scan_group_two_target_children_run_in_parallel(
     body = _poll_group_terminal(api_client, group_id)
     assert body["status"] == "completed", body
 
-    # Distribution: with 2 targets + N=2, round-robin lands child[0]
-    # on zap_q_1 and child[1] on zap_q_2.
+    # Distribution: with 2 targets + N=2, round-robin lands one child
+    # on each queue.  Asserted as a Counter rather than an ordered list
+    # because rows committed in the same INSERT batch share a
+    # server-default ``created_at`` timestamp, so the secondary
+    # ``id ASC`` tiebreaker (random UUID, non-monotonic) decides row
+    # order — and the production contract is balanced distribution,
+    # NOT a per-row index→queue mapping.
     children = (
-        db_session.execute(
-            select(Scan)
-            .where(Scan.scan_group_id == uuid.UUID(group_id))
-            .order_by(Scan.created_at.asc(), Scan.id.asc())
-        )
+        db_session.execute(select(Scan).where(Scan.scan_group_id == uuid.UUID(group_id)))
         .scalars()
         .all()
     )
     assert len(children) == 2
-    queues = [c.assigned_queue for c in children]
-    assert queues == [
-        "zap_q_1",
-        "zap_q_2",
-    ], f"expected round-robin distribution [zap_q_1, zap_q_2]; got {queues}"
+    queue_counts = Counter(c.assigned_queue for c in children)
+    assert queue_counts == Counter(
+        {"zap_q_1": 1, "zap_q_2": 1}
+    ), f"expected balanced fan-out 1×zap_q_1 + 1×zap_q_2; got {queue_counts}"
 
     # Parallelism: both children flipped to ``running`` within the
     # window.  ``started_at`` is set by the worker via
@@ -414,9 +415,18 @@ def test_scan_group_four_targets_round_robin_across_two_queues(
     api_client: httpx.Client,
     db_session: Session,
 ) -> None:
-    """4 children + N=2 → distribution [zap_q_1, zap_q_2, zap_q_1, zap_q_2].
+    """4 children + N=2 → balanced fan-out (2 children per queue).
 
-    Locks in the round-robin formula: ``child[i] -> zap_q_{(i % N) + 1}``.
+    Locks in the round-robin INVARIANT: each ZAP+worker pair gets the
+    same number of children.  The production contract is "balanced
+    distribution", not "child[i] -> zap_q_{(i % N) + 1}" — the latter
+    is an internal iteration detail that the DB doesn't preserve once
+    rows commit (identical ``created_at`` within one INSERT batch makes
+    secondary ``id ASC`` ordering, on random UUIDs, non-deterministic).
+    Asserting on ``Counter`` keeps the regression net (an N→1 collapse
+    or off-by-one in ``zap_queue_for_index`` flips the counts) without
+    flaking on row order.
+
     Doubles as a regression test for the rollup-atomicity invariant —
     with 4 children racing through their terminal-mark commits, only
     ONE rollup must succeed (the group ends up with exactly one
@@ -445,21 +455,15 @@ def test_scan_group_four_targets_round_robin_across_two_queues(
     assert body["summary"]["failed"] == 0
 
     children = (
-        db_session.execute(
-            select(Scan)
-            .where(Scan.scan_group_id == uuid.UUID(group_id))
-            .order_by(Scan.created_at.asc(), Scan.id.asc())
-        )
+        db_session.execute(select(Scan).where(Scan.scan_group_id == uuid.UUID(group_id)))
         .scalars()
         .all()
     )
-    queues = [c.assigned_queue for c in children]
-    assert queues == [
-        "zap_q_1",
-        "zap_q_2",
-        "zap_q_1",
-        "zap_q_2",
-    ], f"expected round-robin [1,2,1,2]; got {queues}"
+    assert len(children) == 4
+    queue_counts = Counter(c.assigned_queue for c in children)
+    assert queue_counts == Counter(
+        {"zap_q_1": 2, "zap_q_2": 2}
+    ), f"expected balanced fan-out 2×zap_q_1 + 2×zap_q_2; got {queue_counts}"
 
     # Atomicity probe: there must be exactly ONE completed_at on the
     # group row and the API summary must NOT show any non-terminal
@@ -502,20 +506,20 @@ def test_scan_group_partial_failure_runs_in_parallel(
     body = _poll_group_terminal(api_client, group_id)
     assert body["status"] == "partial_failure", body
 
+    # Distribution: balanced fan-out across the 2 queues.  Order-
+    # insensitive Counter comparison — see the long comment in
+    # ``test_scan_group_four_targets_round_robin_across_two_queues``
+    # for why row order is not part of the contract.
     children = (
-        db_session.execute(
-            select(Scan)
-            .where(Scan.scan_group_id == uuid.UUID(group_id))
-            .order_by(Scan.created_at.asc(), Scan.id.asc())
-        )
+        db_session.execute(select(Scan).where(Scan.scan_group_id == uuid.UUID(group_id)))
         .scalars()
         .all()
     )
-    queues = [c.assigned_queue for c in children]
-    assert queues == [
-        "zap_q_1",
-        "zap_q_2",
-    ], f"partial-failure children should still distribute round-robin; got {queues}"
+    assert len(children) == 2
+    queue_counts = Counter(c.assigned_queue for c in children)
+    assert queue_counts == Counter(
+        {"zap_q_1": 1, "zap_q_2": 1}
+    ), f"partial-failure children should still distribute round-robin; got {queue_counts}"
 
 
 def test_post_scan_legacy_path_persists_assigned_queue(
