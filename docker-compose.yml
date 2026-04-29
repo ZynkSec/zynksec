@@ -219,6 +219,59 @@ services:
       - --loglevel=INFO
       - --queues=zap_q_2
 
+  # ---------- Phase 3 Sprint 1: code-worker (gitleaks + future repo
+  # scanners) ----------------------------------------------------------
+  # Sibling of worker1/worker2.  Subscribes to ``code_q`` only; never
+  # services ZAP tasks.  Uses a dedicated Dockerfile that adds the
+  # gitleaks CLI + git on top of the worker base image — keeping the
+  # ZAP worker image lean (no scanner-family code-bloat).
+  # ``WORKER_FAMILY=code`` tells the worker process to skip
+  # ZAP-specific structlog bindings.
+  #
+  # ``--concurrency=2`` rather than Celery's default CPU-count: the
+  # default spawns one prefork child per host CPU, which on a
+  # 12-core dev machine pushes the container past its memory ceiling
+  # (each child carries the full SQLAlchemy + zynksec_scanners import
+  # graph in private memory, ~100 MiB each).  Two concurrent gitleaks
+  # scans is plenty for Sprint 1's workload — each run takes seconds,
+  # so the queue never builds depth in practice.  Bump in later
+  # sprints (semgrep, trivy) if the workload outgrows this.
+  #
+  # Networks: zynksec-core (Postgres + Redis) + zynksec-scan.  NOT on
+  # zynksec-targets — the cloner egresses to public Git hosts, not
+  # to the lab.  No host-port publish.  Memory ceiling: 768 MiB
+  # (two prefork children + Celery master + import graph land
+  # around 600 MiB in practice; 768 MiB leaves headroom).
+  code-worker:
+    build:
+      context: .
+      dockerfile: infra/docker/code-worker.Dockerfile
+    image: zynksec/code-worker:dev
+    container_name: zynksec-code-worker
+    restart: unless-stopped
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      WORKER_FAMILY: "code"
+    networks:
+      - zynksec-core
+      - zynksec-scan
+    mem_limit: 768m
+    memswap_limit: 768m
+    command:
+      - celery
+      - -A
+      - zynksec_worker.celery_app
+      - worker
+      - --loglevel=INFO
+      - --queues=code_q
+      - --concurrency=2
+
   mailpit:
     image: axllent/mailpit:latest
     container_name: zynksec-mailpit

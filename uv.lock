@@ -908,6 +908,7 @@ dependencies = [
     { name = "structlog" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "zynksec-db" },
+    { name = "zynksec-scanners" },
     { name = "zynksec-schema" },
 ]
 
@@ -925,6 +926,7 @@ requires-dist = [
     { name = "structlog", specifier = ">=24,<25" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32,<0.33" },
     { name = "zynksec-db", editable = "packages/db" },
+    { name = "zynksec-scanners", editable = "packages/scanners" },
     { name = "zynksec-schema", editable = "packages/shared-schema" },
 ]
 
@@ -1028,7 +1030,7 @@ dev = [
     { name = "pydantic", specifier = ">=2.9,<3" },
     { name = "pytest", specifier = ">=9.0.3,<10" },
     { name = "pytest-timeout", specifier = ">=2.3,<3" },
-    { name = "ruff", specifier = ">=0.7,<0.8" },
+    { name = "ruff", specifier = ">=0.7,<0.16" },
     { name = "sqlalchemy", specifier = ">=2.0,<3" },
     { name = "zynksec-db", editable = "packages/db" },
 ]
