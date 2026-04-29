@@ -167,8 +167,7 @@ class ScanGroupRepository(Repository[ScanGroup]):
         # Each branch casts to ``scan_group_status`` because Postgres
         # treats the bare string literals as ``text`` and refuses
         # ``text -> ENUM`` auto-cast on the assignment.
-        sql = sa.text(
-            """
+        sql = sa.text("""
             WITH counts AS (
                 SELECT
                     COUNT(*) FILTER (WHERE status = 'completed') AS completed,
@@ -192,8 +191,7 @@ class ScanGroupRepository(Repository[ScanGroup]):
               AND sg.status IN ('queued', 'running')
               AND c.pending = 0
             RETURNING sg.status;
-            """
-        )
+            """)
         row = session.execute(sql, {"group_id": scan_group_id}).first()
         session.flush()
         if row is None:
