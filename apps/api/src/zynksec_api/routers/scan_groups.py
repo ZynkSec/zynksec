@@ -38,7 +38,6 @@ from collections import Counter
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, status
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 from zynksec_db import (
     Scan,
@@ -46,6 +45,7 @@ from zynksec_db import (
     ScanGroupRepository,
     ScanRepository,
     Target,
+    TargetRepository,
 )
 from zynksec_schema import ScanProfile, zap_queue_for_index
 
@@ -74,9 +74,15 @@ def get_scan_repository() -> ScanRepository:
     return ScanRepository()
 
 
+def get_target_repository() -> TargetRepository:
+    """FastAPI dependency — returns a fresh :class:`TargetRepository`."""
+    return TargetRepository()
+
+
 SessionDep = Annotated[Session, Depends(get_session)]
 ScanGroupRepoDep = Annotated[ScanGroupRepository, Depends(get_scan_group_repository)]
 ScanRepoDep = Annotated[ScanRepository, Depends(get_scan_repository)]
+TargetRepoDep = Annotated[TargetRepository, Depends(get_target_repository)]
 
 
 def _child_scan_to_read(scan: Scan) -> ScanRead:
@@ -112,23 +118,19 @@ def _child_scan_to_read(scan: Scan) -> ScanRead:
 
 
 def _children_rollup(
+    scan_repo: ScanRepository,
     session: Session,
     scan_group_id: uuid.UUID,
 ) -> tuple[ScanGroupSummary, list[uuid.UUID], list[ScanRead]]:
     """Per-status summary + ordered child id list + embedded ScanReads.
 
-    Reads all child Scan rows ordered by ``created_at`` so the id
-    list matches the deterministic order the worker iterates in.
-    Phase 2 Sprint 2 caps groups at 50 children, so building N
-    ScanRead objects in-process is cheap; if N grows, the embedded
-    list becomes a paginated sub-resource.
+    Reads via :meth:`ScanRepository.list_by_group` (deterministic
+    ``(created_at, id)`` ordering) so the id list matches the order
+    the worker iterates in.  Phase 2 Sprint 2 caps groups at 50
+    children, so building N ScanRead objects in-process is cheap;
+    if N grows, the embedded list becomes a paginated sub-resource.
     """
-    stmt = (
-        select(Scan)
-        .where(Scan.scan_group_id == scan_group_id)
-        .order_by(Scan.created_at.asc(), Scan.id.asc())
-    )
-    children = list(session.execute(stmt).scalars().all())
+    children = scan_repo.list_by_group(session, scan_group_id)
     child_ids = [c.id for c in children]
     child_scans = [_child_scan_to_read(c) for c in children]
     statuses: Counter[str] = Counter(c.status for c in children)
@@ -181,27 +183,34 @@ def _validate_target_ids(target_ids: list[uuid.UUID]) -> None:
 
 
 def _load_targets_or_422(
+    target_repo: TargetRepository,
     session: Session,
     target_ids: list[uuid.UUID],
+    *,
+    project_id: uuid.UUID,
 ) -> list[Target]:
     """Fetch the requested Targets; raise canonical 422 if any are unknown.
 
-    Returns the Targets in the SAME ORDER as ``target_ids`` so the
+    Goes through :meth:`TargetRepository.bulk_get`, which filters the
+    ``IN (...)`` query by ``project_id`` so cross-project ids are
+    treated identically to truly-missing ids — a client can't
+    distinguish "doesn't exist anywhere" from "exists in a different
+    project" by string-matching the response body, which would leak
+    existence under multi-tenant auth (Phase 1+).
+
+    Returns Targets in the SAME ORDER as ``target_ids`` so the
     child Scan rows the caller creates downstream end up in the
-    same order as the request payload (the integration test reads
-    on this ordering).
+    same order as the request payload.
     """
-    stmt = select(Target).where(Target.id.in_(target_ids))
-    found = list(session.execute(stmt).scalars().all())
-    found_by_id = {t.id: t for t in found}
-    unknown = [tid for tid in target_ids if tid not in found_by_id]
+    found = target_repo.bulk_get(session, target_ids, project_id=project_id)
+    found_ids = {t.id for t in found}
+    unknown = [tid for tid in target_ids if tid not in found_ids]
     if unknown:
         raise UnknownTargetIds(
             "one or more target_ids do not exist in this project",
             details={"unknown_target_ids": [str(tid) for tid in unknown]},
         )
-    # Preserve request order — matters for child creation order.
-    return [found_by_id[tid] for tid in target_ids]
+    return found
 
 
 @router.post(
@@ -215,6 +224,7 @@ def create_scan_group(
     session: SessionDep,
     group_repo: ScanGroupRepoDep,
     scan_repo: ScanRepoDep,
+    target_repo: TargetRepoDep,
 ) -> ScanGroupRead:
     """Persist parent ScanGroup + N child Scan rows + enqueue worker.
 
@@ -227,29 +237,17 @@ def create_scan_group(
     request specifies (or the implicit Local Dev project if
     omitted).  All Target rows must belong to the SAME project as
     the resolved group; cross-project membership is rejected as
-    ``unknown_target_ids`` because, from the resolved project's
-    point of view, those ids effectively don't exist.
+    ``unknown_target_ids`` (same envelope as truly-missing) so
+    existence doesn't leak across project boundaries.
 
-    Targets are loaded inline via a single bulk
-    ``SELECT ... WHERE id IN (...)`` query in :func:`_load_targets_or_422`
-    rather than going through ``TargetRepository`` — pushing the bulk
-    fetch into the repo is a separate follow-up.
+    Targets are loaded via :meth:`TargetRepository.bulk_get`, which
+    filters by ``project_id`` at the DB level — the router doesn't
+    need a separate cross-project check.
     """
     _validate_target_ids(body.target_ids)
     project = resolve_project_for_request(session, body.project_id)
 
-    targets = _load_targets_or_422(session, body.target_ids)
-    cross_project = [t for t in targets if t.project_id != project.id]
-    if cross_project:
-        # Same message string + same code as the truly-missing case so a
-        # client can't distinguish "target doesn't exist anywhere" from
-        # "target exists in a different project" by string-matching the
-        # response body — that distinction would leak existence under
-        # multi-tenant auth (Phase 1+).
-        raise UnknownTargetIds(
-            "one or more target_ids do not exist in this project",
-            details={"unknown_target_ids": [str(t.id) for t in cross_project]},
-        )
+    targets = _load_targets_or_422(target_repo, session, body.target_ids, project_id=project.id)
 
     group = ScanGroup(
         project_id=project.id,
@@ -317,6 +315,7 @@ def create_scan_group(
 def list_scan_groups(
     session: SessionDep,
     repo: ScanGroupRepoDep,
+    scan_repo: ScanRepoDep,
     project_id: Annotated[uuid.UUID | None, Query()] = None,
 ) -> list[ScanGroupRead]:
     """List groups in a project, newest first.
@@ -329,7 +328,7 @@ def list_scan_groups(
     groups = repo.list_by_project(session, project.id)
     out: list[ScanGroupRead] = []
     for group in groups:
-        summary, child_ids, child_scans = _children_rollup(session, group.id)
+        summary, child_ids, child_scans = _children_rollup(scan_repo, session, group.id)
         out.append(_scan_group_to_read(group, summary, child_ids, child_scans))
     return out
 
@@ -343,9 +342,10 @@ def get_scan_group(
     scan_group_id: uuid.UUID,
     session: SessionDep,
     repo: ScanGroupRepoDep,
+    scan_repo: ScanRepoDep,
 ) -> ScanGroupRead:
     group = repo.get(session, scan_group_id)
     if group is None:
         raise ScanGroupNotFound(f"scan_group {scan_group_id} does not exist")
-    summary, child_ids, child_scans = _children_rollup(session, group.id)
+    summary, child_ids, child_scans = _children_rollup(scan_repo, session, group.id)
     return _scan_group_to_read(group, summary, child_ids, child_scans)

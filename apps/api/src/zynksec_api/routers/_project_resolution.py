@@ -24,13 +24,13 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
-from zynksec_db import Project
+from zynksec_db import Project, ProjectRepository
 
 from zynksec_api.exceptions import ProjectNotFound
 
 _IMPLICIT_PROJECT_NAME = "Local Dev"
+_project_repo = ProjectRepository()
 
 
 def resolve_project_for_request(
@@ -48,17 +48,14 @@ def resolve_project_for_request(
     """
     if project_id is None:
         return _get_or_create_local_dev(session)
-    found = session.get(Project, project_id)
+    found = _project_repo.get(session, project_id)
     if found is None:
         raise ProjectNotFound(f"project {project_id} does not exist")
     return found
 
 
 def _get_or_create_local_dev(session: Session) -> Project:
-    stmt = select(Project).where(Project.name == _IMPLICIT_PROJECT_NAME)
-    project = session.execute(stmt).scalar_one_or_none()
+    project = _project_repo.get_by_name(session, _IMPLICIT_PROJECT_NAME)
     if project is None:
-        project = Project(name=_IMPLICIT_PROJECT_NAME)
-        session.add(project)
-        session.flush()
+        project = _project_repo.add(session, Project(name=_IMPLICIT_PROJECT_NAME))
     return project

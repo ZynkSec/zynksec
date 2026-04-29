@@ -6,7 +6,7 @@ import logging
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import update
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from zynksec_db.models.scan import Scan
@@ -23,6 +23,39 @@ class ScanRepository(Repository[Scan]):
     """
 
     model = Scan
+
+    def list_by_group(
+        self,
+        session: Session,
+        scan_group_id: uuid.UUID,
+    ) -> list[Scan]:
+        """Return every child scan of a group, ordered by ``(created_at, id)``.
+
+        The deterministic ordering matches what the worker iterates
+        in and what the API echoes via ``child_scan_ids`` /
+        ``child_scans`` so a client traversing either list reads
+        the same children in the same order.
+        """
+        stmt = (
+            select(Scan)
+            .where(Scan.scan_group_id == scan_group_id)
+            .order_by(Scan.created_at.asc(), Scan.id.asc())
+        )
+        return list(session.execute(stmt).scalars().all())
+
+    def total_count(self, session: Session) -> int:
+        """``COUNT(*) FROM scans`` — used by the legacy POST rotation cursor.
+
+        Phase 2 Sprint 3's legacy single-scan path picks the per-pair
+        queue via ``(count % N) + 1``; the cursor's "restart-safe"
+        character (no extra table, no Redis counter) depends on this
+        count being read inside the same transaction as the INSERT,
+        so two concurrent POSTs see consistent neighbours.  Pushing
+        the count into the repo keeps the router free of raw SQL
+        (CLAUDE.md §3) without changing the cursor's semantics.
+        """
+        stmt = select(func.count(Scan.id))
+        return int(session.execute(stmt).scalar_one() or 0)
 
     def mark_running(self, session: Session, scan_id: uuid.UUID) -> Scan | None:
         """queued -> running.  Sets ``started_at = now()``."""

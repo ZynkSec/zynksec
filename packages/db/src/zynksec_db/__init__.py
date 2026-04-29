@@ -8,6 +8,7 @@ from zynksec_db.base import Base
 from zynksec_db.models import Finding, Project, Scan, ScanGroup, Target
 from zynksec_db.repositories import (
     FindingRepository,
+    ProjectRepository,
     Repository,
     ScanGroupRepository,
     ScanRepository,
@@ -22,6 +23,7 @@ __all__ = [
     "Finding",
     "FindingRepository",
     "Project",
+    "ProjectRepository",
     "Repository",
     "Scan",
     "ScanGroup",
