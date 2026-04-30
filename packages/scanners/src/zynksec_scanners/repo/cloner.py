@@ -75,6 +75,62 @@ _FORBIDDEN_URL_CODEPOINTS: frozenset[str] = frozenset(chr(c) for c in range(0x00
 _MAX_URL_LENGTH: int = 2048
 _DEFAULT_CLONE_TIMEOUT_S: int = 60
 
+#: Prefixes whose env vars are inherited from the worker process
+#: into the ``git clone`` subprocess.  Phase 3 cleanup item #4: the
+#: pre-cleanup cloner replaced the env outright, dropping
+#: operator-supplied proxy + CA-bundle config.  Forwarding ONLY this
+#: allow-list keeps the surface small (no LD_PRELOAD, no PYTHONPATH,
+#: no unrelated parent-process state) while admitting the env vars
+#: an operator legitimately needs:
+#:
+#:   * ``GIT_*``   — every git config override (e.g.
+#:                   ``GIT_SSL_CAINFO`` for private CAs,
+#:                   ``GIT_CURL_VERBOSE`` for debugging).
+#:   * ``HTTPS_*`` / ``HTTP_*`` / ``NO_*`` — corporate proxy
+#:                   configuration (``HTTPS_PROXY=http://proxy:8080``,
+#:                   ``NO_PROXY=internal.example.com``).
+#:   * ``SSL_*``   — ``SSL_CERT_FILE`` / ``SSL_CERT_DIR`` for
+#:                   custom CA bundles needed by libcurl.
+_INHERITED_ENV_PREFIXES: tuple[str, ...] = (
+    "GIT_",
+    "HTTPS_",
+    "HTTP_",
+    "NO_",
+    "SSL_",
+)
+
+
+def _build_clone_env() -> dict[str, str]:
+    """Build the env dict for the ``git clone`` subprocess.
+
+    Forwards the :data:`_INHERITED_ENV_PREFIXES` allow-list from
+    the worker's environment, then layers explicit overrides on top
+    (``GIT_TERMINAL_PROMPT``, ``PATH``, ``HOME``).  The result is the
+    smallest env that lets a clone (a) inherit operator config
+    (proxies, custom CAs) and (b) carry the explicit zynksec
+    overrides (no terminal prompt, deterministic ``HOME``).
+    """
+    inherited = {
+        k: v for k, v in os.environ.items() if any(k.startswith(p) for p in _INHERITED_ENV_PREFIXES)
+    }
+    overrides = {
+        # Keep git from prompting for credentials — any
+        # auth-required clone in Sprint 1 is a misconfig, not
+        # something to wait on a TTY for.  ``terminal.prompt``
+        # silences the credential helper too.  Overrides any
+        # inherited ``GIT_TERMINAL_PROMPT`` so an operator can't
+        # accidentally re-enable prompts.
+        "GIT_TERMINAL_PROMPT": "0",
+        "PATH": os.environ.get("PATH", ""),
+        # ``HOME`` defaults to ``tempfile.gettempdir()`` rather
+        # than the bare ``/tmp`` literal — same effective path
+        # on POSIX, but keeps Bandit's S108 "/tmp insecure"
+        # check from firing on what is actually a deliberate
+        # use of the system temp dir.
+        "HOME": os.environ.get("HOME", tempfile.gettempdir()),
+    }
+    return {**inherited, **overrides}
+
 
 class CloneError(RuntimeError):
     """Raised when a clone is rejected by the allow-list or fails on disk."""
@@ -220,12 +276,25 @@ def _scan_root(scan_id: str) -> Path:
     """Per-scan temp directory under ``/tmp/zynksec-scans/<scan_id>``.
 
     Single root for every scan — cleanup, monitoring, and incident
-    response can target one prefix.  The directory is created with
-    ``0o700`` so other users on a shared host can't peek at clone
-    contents while the scan runs.
+    response can target one prefix.  Both the per-scan dir AND its
+    ``zynksec-scans/`` parent are forced to ``0o700``: ``mkdir(mode=...)``
+    only applies the mode to the LAST directory it creates, so the
+    parent would otherwise inherit the system umask (typically 0755 →
+    world-readable).  On a multi-process container, a 0755 parent
+    lets any other UID list the in-flight scan UUIDs (metadata leak,
+    even though the per-scan contents stay protected by the leaf
+    0o700).  Forcing the parent on every call closes that gap.
+
+    Idempotent: ``Path.chmod`` on an already-0o700 directory is a
+    no-op.  Cheap enough to run on every clone rather than once at
+    startup — keeps the security invariant local to the function
+    that needs it, no module-import side effects.
     """
-    root = Path(tempfile.gettempdir()) / "zynksec-scans" / scan_id
-    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    parent = Path(tempfile.gettempdir()) / "zynksec-scans"
+    parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    parent.chmod(0o700)
+    root = parent / scan_id
+    root.mkdir(exist_ok=True, mode=0o700)
     return root
 
 
@@ -255,7 +324,11 @@ def clone_shallow(
         ref-not-found).  The wrapping strips stderr down to the
         last line so we don't leak whatever git printed verbatim.
     """
-    validate_clone_url(git_url)
+    # Capture the parsed (scheme, host) from validate_clone_url so
+    # the logger below doesn't have to re-parse the URL.  Phase 3
+    # cleanup item #9a — pre-cleanup the result was discarded and
+    # the host extracted via a second ``urlsplit`` call.
+    _scheme, host = validate_clone_url(git_url)
 
     root = _scan_root(scan_id)
     target = root / "repo"
@@ -286,8 +359,11 @@ def clone_shallow(
     _log.info(
         "repo.clone.start",
         scan_id=scan_id,
-        # URL is intentionally NOT logged — see ``_validate_clone_url``.
-        host=urlsplit(git_url).hostname,
+        # Full URL is intentionally NOT logged — it could carry a
+        # userinfo segment we'd rather not leak.  See
+        # ``validate_clone_url`` for the rejection rules and the
+        # rationale.
+        host=host,
     )
     try:
         subprocess.run(  # noqa: S603 — list-form, validated URL
@@ -296,20 +372,20 @@ def clone_shallow(
             timeout=timeout_s,
             capture_output=True,
             text=True,
-            env={
-                # Keep git from prompting for credentials — any
-                # auth-required clone in Sprint 1 is a misconfig,
-                # not something to wait on a TTY for.  ``terminal.prompt``
-                # silences the credential helper too.
-                "GIT_TERMINAL_PROMPT": "0",
-                "PATH": os.environ.get("PATH", ""),
-                # ``HOME`` defaults to ``tempfile.gettempdir()`` rather
-                # than the bare ``/tmp`` literal — same effective path
-                # on POSIX, but keeps Bandit's S108 "/tmp insecure"
-                # check from firing on what is actually a deliberate
-                # use of the system temp dir.
-                "HOME": os.environ.get("HOME", tempfile.gettempdir()),
-            },
+            # ``git clone`` doesn't read stdin in normal operation,
+            # but git has had historical bugs where credential
+            # helpers prompt on stdin in non-interactive contexts
+            # (``GIT_TERMINAL_PROMPT=0`` covers most of those).
+            # Closing stdin defensively is cheap insurance against
+            # any controlled stream from the parent process feeding
+            # credentials into git's auth prompt.  Phase 3 cleanup
+            # item #3.
+            stdin=subprocess.DEVNULL,
+            # Env built from the inherited allow-list +
+            # explicit overrides — see ``_build_clone_env``.
+            # Pre-cleanup, this was a hardcoded 3-key dict that
+            # dropped operator proxy / CA-bundle config.
+            env=_build_clone_env(),
         )
     except subprocess.TimeoutExpired as exc:
         shutil.rmtree(root, ignore_errors=True)

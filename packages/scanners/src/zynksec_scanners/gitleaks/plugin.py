@@ -57,14 +57,26 @@ _log = structlog.get_logger(__name__)
 
 
 # ---------- Severity mapping ----------
-# Gitleaks rule ids vary by version; the categories below match
-# the rule "tags" gitleaks emits in JSON output.  The mapping is
-# deliberately conservative — generic / low-entropy hits stay LOW
-# so a flood of partials doesn't drown out the high-confidence AWS
-# / GCP / cloud-provider keys an operator actually needs to rotate
-# this afternoon.
+# Gitleaks rule ids are kebab-case ``family-specific``; categories
+# below classify by FAMILY prefix (always trailing-dash so
+# ``"jwt"`` doesn't accidentally match a future ``"jwtbomb"`` rule).
+# A separate exact-name table covers the gitleaks rules whose
+# canonical name has no family suffix (``jwt``, ``generic-api-key``).
+# The mapping is deliberately conservative — generic / low-entropy
+# hits stay LOW so a flood of partials doesn't drown out the
+# high-confidence AWS / GCP / cloud-provider keys an operator
+# actually needs to rotate this afternoon.
+#
+# Phase 3 cleanup item #8: pre-cleanup, ``("jwt",)`` /
+# ``("oauth",)`` / ``("api-key",)`` lacked the trailing-dash
+# discipline of the other entries.  ``startswith("jwt")`` would
+# match any rule whose name BEGAN with "jwt", including unintended
+# future rules like ``jwt-anything-else-a-future-rule-might-be-named``.
+# The split into exact-name + dashed-prefix tables locks the
+# matching down: exact-name rules use ``==``; prefix-family rules
+# require the trailing dash.
 _SEVERITY_BY_RULE_PREFIX: list[tuple[tuple[str, ...], str, str]] = [
-    # (rule_id prefixes, secret_kind label, severity)
+    # (rule_id prefixes — TRAILING DASH REQUIRED, secret_kind, severity)
     (
         ("aws-",),
         "AWS access key",
@@ -81,7 +93,7 @@ _SEVERITY_BY_RULE_PREFIX: list[tuple[tuple[str, ...], str, str]] = [
         "critical",
     ),
     (
-        ("private-key", "rsa-private-key", "ssh-", "pgp-"),
+        ("private-key-", "rsa-private-key-", "ssh-", "pgp-"),
         "Private key material",
         "critical",
     ),
@@ -96,16 +108,27 @@ _SEVERITY_BY_RULE_PREFIX: list[tuple[tuple[str, ...], str, str]] = [
         "high",
     ),
     (
-        ("jwt", "bearer", "oauth"),
+        ("jwt-", "bearer-", "oauth-"),
         "Bearer / OAuth token",
         "medium",
     ),
     (
-        ("generic-api-key", "api-key"),
+        ("api-key-", "generic-api-key-"),
         "Generic API key",
         "medium",
     ),
 ]
+
+#: Gitleaks default rules whose canonical names do NOT carry a
+#: trailing family suffix.  Matched with ``==`` (case-insensitive)
+#: so ``jwt`` does NOT match a hypothetical future ``jwtbomb`` rule.
+_SEVERITY_BY_EXACT_RULE: dict[str, tuple[str, str]] = {
+    # Bare-name rules from upstream gitleaks default config.
+    "jwt": ("Bearer / OAuth token", "medium"),
+    "private-key": ("Private key material", "critical"),
+    "rsa-private-key": ("Private key material", "critical"),
+    "generic-api-key": ("Generic API key", "medium"),
+}
 
 
 def _classify(rule_id: str) -> tuple[str, str]:
@@ -116,6 +139,8 @@ def _classify(rule_id: str) -> tuple[str, str]:
     just not as high-priority alerts.
     """
     rule_lc = rule_id.lower()
+    if rule_lc in _SEVERITY_BY_EXACT_RULE:
+        return _SEVERITY_BY_EXACT_RULE[rule_lc]
     for prefixes, kind, severity in _SEVERITY_BY_RULE_PREFIX:
         if any(rule_lc.startswith(p) for p in prefixes):
             return kind, severity
@@ -190,7 +215,6 @@ class GitleaksPlugin(ScannerPlugin):
 
     id = "gitleaks"
     display_name = "Gitleaks"
-    engine_version = "8.18"
     supported_target_kinds: set[str] = {"repo"}
     supported_intensities: set[str] = {ScanProfile.PASSIVE.value}
     required_capabilities: set[str] = set()
@@ -206,6 +230,14 @@ class GitleaksPlugin(ScannerPlugin):
         self._gitleaks = gitleaks_bin or self._GITLEAKS_BIN
         self._exit_stack: ExitStack | None = None
         self._handle: RepoHandle | None = None
+        # Phase 3 cleanup item #9c: discover the actual gitleaks
+        # version once at instantiation rather than carrying a
+        # hardcoded class-attribute that drifts from the
+        # Dockerfile-pinned binary.  Falls back to ``"unknown"``
+        # if the ``gitleaks version`` probe fails — version-
+        # detection is observability-only, never a reason to crash
+        # the worker on startup.
+        self.engine_version: str = self._detect_engine_version()
 
     # ---- contract ----
     def supports(self, target: ScanTarget) -> bool:
@@ -285,6 +317,12 @@ class GitleaksPlugin(ScannerPlugin):
                 timeout=self._SCAN_TIMEOUT_S,
                 capture_output=True,
                 text=True,
+                # gitleaks doesn't read stdin in normal operation,
+                # but ``GIT_TERMINAL_PROMPT=0`` doesn't apply here
+                # (gitleaks isn't git).  Close stdin defensively so
+                # nothing from the parent process can feed it.
+                # Phase 3 cleanup item #3.
+                stdin=subprocess.DEVNULL,
             )
         except subprocess.TimeoutExpired as exc:
             raise RuntimeError(f"gitleaks scan timed out after {self._SCAN_TIMEOUT_S}s") from exc
@@ -411,6 +449,9 @@ class GitleaksPlugin(ScannerPlugin):
                 timeout=10,
                 capture_output=True,
                 text=True,
+                # Same rationale as the ``run`` site above —
+                # defence in depth (Phase 3 cleanup item #3).
+                stdin=subprocess.DEVNULL,
             )
         except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
             return HealthStatus(ok=False, message=f"gitleaks unavailable: {exc}")
@@ -428,6 +469,34 @@ class GitleaksPlugin(ScannerPlugin):
                 "is the code-worker image built from "
                 "infra/docker/code-worker.Dockerfile?",
             )
+
+    def _detect_engine_version(self) -> str:
+        """Run ``gitleaks version`` once and return the parsed string.
+
+        Observability-only: the value is cached on the instance and
+        echoed in ``ScanContext.metadata['engine_version']`` so log
+        readers can see which gitleaks binary actually ran.  Any
+        failure (binary missing, subprocess crash, weird output)
+        falls back to ``"unknown"`` rather than raising — the
+        worker should still be able to scan even if version
+        detection blips.
+        """
+        if shutil.which(self._gitleaks) is None:
+            return "unknown"
+        try:
+            completed = subprocess.run(  # noqa: S603 — list-form, fixed args
+                [self._gitleaks, "version"],
+                check=False,
+                timeout=5,
+                capture_output=True,
+                text=True,
+                stdin=subprocess.DEVNULL,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return "unknown"
+        if completed.returncode != 0:
+            return "unknown"
+        return (completed.stdout or "").strip() or "unknown"
 
 
 def code_findings_from_gitleaks(

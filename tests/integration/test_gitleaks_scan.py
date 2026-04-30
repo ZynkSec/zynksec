@@ -29,6 +29,7 @@ Five tests, one assertion theme each:
 
 from __future__ import annotations
 
+import json
 import subprocess  # noqa: S404 — list-form docker exec probes, no shell
 import time
 import uuid
@@ -52,11 +53,15 @@ _TERMINAL_BUDGET_S = 180.0
 
 _FIXTURE_REPO_URL = "http://gitfixture/vulnerable-repo.git"
 
-# Plant catalogue — must match ``tests/fixtures/vulnerable-repo-src/``.
+# Plant catalogue — must match the inline plants constructed in
+# ``tests/fixtures/gitfixture.Dockerfile`` (the original
+# ``vulnerable-repo-src/`` directory was removed during the
+# Sprint 1 PR's restructure; plants are now built at image-build
+# time from split / base64-encoded fragments).
 # File paths are relative to the repo root (which is what gitleaks
 # emits and what ``CodeFinding.file_path`` stores).  Line numbers are
 # 1-indexed and account for the leading comment lines in each plant
-# file — adjust here if the fixture files change.
+# file — adjust here if the Dockerfile fixture changes.
 _EXPECTED_PLANTS: list[dict[str, object]] = [
     {
         "file_path": "config/aws_credentials.txt",
@@ -404,4 +409,75 @@ def test_gitleaks_scan_cleans_up_all_disk_residue(
         f"after a failed scan, /tmp/zynksec-scans/{fail_scan_id}/ still "
         "exists in the code-worker container — even the error path must "
         "wipe the per-scan tempdir"
+    )
+
+
+def test_dispatch_agreement_api_assigned_queue_matches_worker_plugin(
+    api_client: httpx.Client,
+    db_session: Session,
+) -> None:
+    """The plugin the worker selects must match the kind that
+    determined ``Scan.assigned_queue`` at API write-time.
+
+    Phase 3 cleanup item #10.  No PATCH endpoint on Target exists
+    today, so the API + worker can't actually disagree about
+    ``Target.kind`` mid-flight.  This test pins the contract so a
+    future PATCH that mutates ``kind`` between scan POST and
+    pickup would be caught — the worker emits a structured
+    ``scan.run.plugin_selected`` log line with
+    ``kind`` / ``scanner_family`` / ``plugin_id``; the test reads
+    the code-worker container logs after a kind=repo scan
+    completes and asserts the values match the persisted
+    ``assigned_queue``.
+
+    Why a docker-logs assertion rather than a DB column: today
+    the worker's plugin-selection state isn't persisted anywhere
+    except logs.  Adding a column for an invariant that can't be
+    violated under the current API surface is YAGNI; the log line
+    is the cheapest place to lock the contract.
+    """
+    target = _create_repo_target(api_client)
+    response = api_client.post("/api/v1/scans", json={"target_id": target["id"]})
+    assert response.status_code == 202
+    scan_id = response.json()["id"]
+
+    # API-side contract: kind=repo → assigned_queue=code_q.
+    row = db_session.execute(select(Scan).where(Scan.id == uuid.UUID(scan_id))).scalar_one()
+    assert row.assigned_queue == "code_q", row.assigned_queue
+
+    # Wait for terminal so the worker has emitted the log line.
+    body = _wait_for_terminal(api_client, scan_id)
+    assert body["status"] == "completed", body
+
+    # Pull the code-worker logs and find the matching event.
+    # ``docker`` is on PATH inside the integration test runner;
+    # using a partial executable path is intentional for
+    # portability across CI runners (S607 noqa).
+    log_cmd = ["docker", "logs", "zynksec-code-worker"]  # noqa: S607
+    log_proc = subprocess.run(  # noqa: S603 — list-form, fixed args
+        log_cmd,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    matching = [
+        json.loads(line)
+        for line in log_proc.stdout.splitlines()
+        # Cheap pre-filter to avoid json-decoding every log line.
+        if '"scan.run.plugin_selected"' in line and scan_id in line
+        if line.strip().startswith("{")
+    ]
+    assert matching, (
+        f"no scan.run.plugin_selected log line for scan_id={scan_id} found in "
+        f"code-worker logs (len(stdout)={len(log_proc.stdout)})"
+    )
+    event = matching[0]
+    assert event["kind"] == "repo", event
+    assert event["scanner_family"] == "gitleaks", event
+    assert event["plugin_id"] == "gitleaks", event
+    # API-write-time queue must match worker-runtime family — the
+    # invariant the test exists to lock.
+    assert (row.assigned_queue == "code_q") == (event["scanner_family"] == "gitleaks"), (
+        f"dispatch disagreement: assigned_queue={row.assigned_queue!r}, "
+        f"scanner_family={event['scanner_family']!r}"
     )

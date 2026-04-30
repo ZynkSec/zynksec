@@ -1,3 +1,5 @@
+# Pinned by digest. Bump via Dependabot or manual checksum re-verification.
+#
 # gitfixture — serves a known-vulnerable bare git repo over smart
 # HTTP for the Phase 3 Sprint 1 integration tests.  Builds the bare
 # repo at image-build time (deterministic plants) and serves it via
@@ -19,7 +21,10 @@
 # build assembles them locally.  None of the values below are real
 # credentials; the entropy substring is literally "TEST" / "EXAMPLE".
 
-FROM debian:bookworm-slim AS builder
+# Base image pinned by digest (Phase 3 cleanup item #2).  Tag stays
+# in the comment for legibility but ``@sha256:`` is the load-bearing
+# identifier.  Same digest used in both stages below.
+FROM debian:bookworm-slim@sha256:f9c6a2fd2ddbc23e336b6257a5245e31f996953ef06cd13a59fa0a1df2d5c252 AS builder
 
 # git for the repo bootstrap.  Use debian:bookworm-slim instead of
 # alpine because the runtime image needs the same ``git-http-backend``
@@ -96,8 +101,9 @@ RUN git -c init.defaultBranch=main init -q . \
 # Runtime: debian:bookworm-slim with python3 + git (for
 # git-http-backend).  Slightly bigger than alpine but the
 # git-http-backend binary path matches what
-# ``gitfixture-server.py`` expects.
-FROM debian:bookworm-slim
+# ``gitfixture-server.py`` expects.  Same digest pin as the
+# builder stage.
+FROM debian:bookworm-slim@sha256:f9c6a2fd2ddbc23e336b6257a5245e31f996953ef06cd13a59fa0a1df2d5c252
 
 RUN apt-get update -qq \
  && apt-get install -y --no-install-recommends python3 git ca-certificates \

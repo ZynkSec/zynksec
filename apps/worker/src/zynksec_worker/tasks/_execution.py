@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import uuid
 from functools import lru_cache
+from urllib.parse import urlsplit
 
 import structlog
 from sqlalchemy.orm import Session, sessionmaker
@@ -273,14 +274,40 @@ def execute_scan(scan_uuid: uuid.UUID, profile: ScanProfile) -> bool:
         # — we fail loudly rather than silently route.
         plugin: ScannerPlugin = build_plugin_for(target.kind, settings)
         scanner_family = scanner_for_kind(target.kind)
+        # Phase 3 cleanup item #10: emit a structured log line so
+        # an integration test (and any future ops dashboard) can
+        # verify that the plugin the worker actually selected
+        # matches the kind that determined ``Scan.assigned_queue``
+        # at API write-time.  No PATCH endpoint on Target today,
+        # so the API and worker can't disagree, but the log line
+        # locks the contract so a future PATCH that mutates
+        # ``Target.kind`` mid-flight is detectable from logs.
+        _log.info(
+            "scan.run.plugin_selected",
+            scan_id=scan_id_str,
+            kind=target.kind,
+            scanner_family=scanner_family,
+            plugin_id=plugin.id,
+        )
 
         if not plugin.supports(target):
             _mark(factory, "failed", scan_uuid, reason="no scanner supports this target")
+            # Phase 3 Sprint 1 cleanup item #5: log only the host
+            # (and scheme) of the rejected target, not the full
+            # URL.  For a kind=repo target like
+            # ``https://github.com/owner/internal-private-repo-name``
+            # the path itself reveals private context that
+            # operators viewing centralised logs shouldn't see by
+            # default.  Host + scheme are enough for triage; the
+            # full URL is on ``target_url`` in the DB if forensics
+            # need it.
+            parsed = urlsplit(target.url)
             _log.error(
                 "scan.run.unsupported_target",
                 scan_id=scan_id_str,
                 kind=target.kind,
-                url=target.url,
+                scheme=parsed.scheme or None,
+                host=parsed.hostname,
             )
             if scan_group_uuid is not None:
                 _maybe_log_group_terminal(scan_group_uuid, factory)
@@ -297,7 +324,8 @@ def execute_scan(scan_uuid: uuid.UUID, profile: ScanProfile) -> bool:
 
             raw = plugin.run(context)
             findings = list(plugin.normalize(raw, context))
-            _log.info("scan.run.normalized", scan_id=scan_id_str, count=len(findings))
+            findings_count = len(findings)
+            _log.info("scan.run.normalized", scan_id=scan_id_str, count=findings_count)
 
             if findings:
                 with factory() as session:
@@ -328,12 +356,24 @@ def execute_scan(scan_uuid: uuid.UUID, profile: ScanProfile) -> bool:
                     except Exception:
                         session.rollback()
                         raise
+            # Drop raw secrets from local frame ASAP; defense in
+            # depth on top of include_local_variables=False (Phase 3
+            # cleanup item #6).  ``GitleaksFinding`` instances carry
+            # the plaintext ``raw_secret`` field; once the
+            # ``CodeFinding`` rows are persisted (above) the
+            # plaintexts are no longer needed in this scope.
+            # ``findings_count`` was captured upfront so the
+            # subsequent log line doesn't need the list.  Applies
+            # uniformly to ZAP-side findings too — they don't carry
+            # plaintext secrets, but the defensive ``del`` keeps the
+            # pattern consistent.
+            del findings
 
             _mark(factory, "completed", scan_uuid)
             _log.info(
                 "scan.run.complete",
                 scan_id=scan_id_str,
-                findings=len(findings),
+                findings=findings_count,
                 scanner_family=scanner_family,
             )
             if scan_group_uuid is not None:
