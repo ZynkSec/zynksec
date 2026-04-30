@@ -57,14 +57,26 @@ _log = structlog.get_logger(__name__)
 
 
 # ---------- Severity mapping ----------
-# Gitleaks rule ids vary by version; the categories below match
-# the rule "tags" gitleaks emits in JSON output.  The mapping is
-# deliberately conservative — generic / low-entropy hits stay LOW
-# so a flood of partials doesn't drown out the high-confidence AWS
-# / GCP / cloud-provider keys an operator actually needs to rotate
-# this afternoon.
+# Gitleaks rule ids are kebab-case ``family-specific``; categories
+# below classify by FAMILY prefix (always trailing-dash so
+# ``"jwt"`` doesn't accidentally match a future ``"jwtbomb"`` rule).
+# A separate exact-name table covers the gitleaks rules whose
+# canonical name has no family suffix (``jwt``, ``generic-api-key``).
+# The mapping is deliberately conservative — generic / low-entropy
+# hits stay LOW so a flood of partials doesn't drown out the
+# high-confidence AWS / GCP / cloud-provider keys an operator
+# actually needs to rotate this afternoon.
+#
+# Phase 3 cleanup item #8: pre-cleanup, ``("jwt",)`` /
+# ``("oauth",)`` / ``("api-key",)`` lacked the trailing-dash
+# discipline of the other entries.  ``startswith("jwt")`` would
+# match any rule whose name BEGAN with "jwt", including unintended
+# future rules like ``jwt-anything-else-a-future-rule-might-be-named``.
+# The split into exact-name + dashed-prefix tables locks the
+# matching down: exact-name rules use ``==``; prefix-family rules
+# require the trailing dash.
 _SEVERITY_BY_RULE_PREFIX: list[tuple[tuple[str, ...], str, str]] = [
-    # (rule_id prefixes, secret_kind label, severity)
+    # (rule_id prefixes — TRAILING DASH REQUIRED, secret_kind, severity)
     (
         ("aws-",),
         "AWS access key",
@@ -81,7 +93,7 @@ _SEVERITY_BY_RULE_PREFIX: list[tuple[tuple[str, ...], str, str]] = [
         "critical",
     ),
     (
-        ("private-key", "rsa-private-key", "ssh-", "pgp-"),
+        ("private-key-", "rsa-private-key-", "ssh-", "pgp-"),
         "Private key material",
         "critical",
     ),
@@ -96,16 +108,27 @@ _SEVERITY_BY_RULE_PREFIX: list[tuple[tuple[str, ...], str, str]] = [
         "high",
     ),
     (
-        ("jwt", "bearer", "oauth"),
+        ("jwt-", "bearer-", "oauth-"),
         "Bearer / OAuth token",
         "medium",
     ),
     (
-        ("generic-api-key", "api-key"),
+        ("api-key-", "generic-api-key-"),
         "Generic API key",
         "medium",
     ),
 ]
+
+#: Gitleaks default rules whose canonical names do NOT carry a
+#: trailing family suffix.  Matched with ``==`` (case-insensitive)
+#: so ``jwt`` does NOT match a hypothetical future ``jwtbomb`` rule.
+_SEVERITY_BY_EXACT_RULE: dict[str, tuple[str, str]] = {
+    # Bare-name rules from upstream gitleaks default config.
+    "jwt": ("Bearer / OAuth token", "medium"),
+    "private-key": ("Private key material", "critical"),
+    "rsa-private-key": ("Private key material", "critical"),
+    "generic-api-key": ("Generic API key", "medium"),
+}
 
 
 def _classify(rule_id: str) -> tuple[str, str]:
@@ -116,6 +139,8 @@ def _classify(rule_id: str) -> tuple[str, str]:
     just not as high-priority alerts.
     """
     rule_lc = rule_id.lower()
+    if rule_lc in _SEVERITY_BY_EXACT_RULE:
+        return _SEVERITY_BY_EXACT_RULE[rule_lc]
     for prefixes, kind, severity in _SEVERITY_BY_RULE_PREFIX:
         if any(rule_lc.startswith(p) for p in prefixes):
             return kind, severity
