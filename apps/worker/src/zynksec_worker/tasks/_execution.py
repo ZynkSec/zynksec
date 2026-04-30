@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import uuid
 from functools import lru_cache
+from urllib.parse import urlsplit
 
 import structlog
 from sqlalchemy.orm import Session, sessionmaker
@@ -276,11 +277,22 @@ def execute_scan(scan_uuid: uuid.UUID, profile: ScanProfile) -> bool:
 
         if not plugin.supports(target):
             _mark(factory, "failed", scan_uuid, reason="no scanner supports this target")
+            # Phase 3 Sprint 1 cleanup item #5: log only the host
+            # (and scheme) of the rejected target, not the full
+            # URL.  For a kind=repo target like
+            # ``https://github.com/owner/internal-private-repo-name``
+            # the path itself reveals private context that
+            # operators viewing centralised logs shouldn't see by
+            # default.  Host + scheme are enough for triage; the
+            # full URL is on ``target_url`` in the DB if forensics
+            # need it.
+            parsed = urlsplit(target.url)
             _log.error(
                 "scan.run.unsupported_target",
                 scan_id=scan_id_str,
                 kind=target.kind,
-                url=target.url,
+                scheme=parsed.scheme or None,
+                host=parsed.hostname,
             )
             if scan_group_uuid is not None:
                 _maybe_log_group_terminal(scan_group_uuid, factory)
