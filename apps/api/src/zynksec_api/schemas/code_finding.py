@@ -1,13 +1,20 @@
 """CodeFinding response model + converter from the SQLAlchemy row.
 
-Phase 3 Sprint 1 wire shape for repo-scanner findings.  Distinct
-from :class:`FindingRead` (HTTP-shaped) — code findings carry file
+Wire shape for repo-scanner findings.  Distinct from
+:class:`FindingRead` (HTTP-shaped) — code findings carry file
 paths and line numbers, never URL + method + parameter.
 
 ``secret_hash`` deliberately omitted from the wire shape: the hash
 exists for cross-scan dedup (a server-side concern) and exposing
 it would let a caller reconstruct match-set membership without
 auth.  ``redacted_preview`` is the operator-facing evidence.
+
+Phase 3 Sprint 2: ``secret_kind`` is ``str | None`` to match the
+Sprint-2 migration that relaxed the DB column to nullable.
+Gitleaks findings populate it (``"AWS access key"``, etc.);
+Semgrep findings leave it NULL because rule_id + severity carry
+the full classification — no "secret kind" applies to a SAST
+pattern.
 """
 
 from __future__ import annotations
@@ -23,7 +30,17 @@ CodeSeverity = Literal["low", "medium", "high", "critical"]
 
 
 class CodeFindingRead(BaseModel):
-    """Wire shape for one secret detected by a repo scanner."""
+    """Wire shape for one finding produced by a repo scanner.
+
+    Same row shape for both gitleaks (secrets) and semgrep (SAST
+    patterns).  Distinguished by:
+      * ``secret_kind`` populated for gitleaks, NULL for semgrep.
+      * ``rule_id`` namespacing — gitleaks rules are short
+        (``aws-access-token``); Semgrep rules are dotted paths
+        (``python.lang.security.audit.eval-detected.eval-detected``).
+      * The owning ``Scan.scanner`` field surfaced on
+        :class:`ScanRead` carries the scanner name.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -33,7 +50,7 @@ class CodeFindingRead(BaseModel):
     line_number: int
     column_number: int | None
     rule_id: str
-    secret_kind: str
+    secret_kind: str | None
     severity: CodeSeverity
     redacted_preview: str
     commit_sha: str | None
