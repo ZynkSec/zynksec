@@ -274,6 +274,21 @@ def execute_scan(scan_uuid: uuid.UUID, profile: ScanProfile) -> bool:
         # — we fail loudly rather than silently route.
         plugin: ScannerPlugin = build_plugin_for(target.kind, settings)
         scanner_family = scanner_for_kind(target.kind)
+        # Phase 3 cleanup item #10: emit a structured log line so
+        # an integration test (and any future ops dashboard) can
+        # verify that the plugin the worker actually selected
+        # matches the kind that determined ``Scan.assigned_queue``
+        # at API write-time.  No PATCH endpoint on Target today,
+        # so the API and worker can't disagree, but the log line
+        # locks the contract so a future PATCH that mutates
+        # ``Target.kind`` mid-flight is detectable from logs.
+        _log.info(
+            "scan.run.plugin_selected",
+            scan_id=scan_id_str,
+            kind=target.kind,
+            scanner_family=scanner_family,
+            plugin_id=plugin.id,
+        )
 
         if not plugin.supports(target):
             _mark(factory, "failed", scan_uuid, reason="no scanner supports this target")
