@@ -37,6 +37,7 @@ plugin's responsibility — :class:`GitleaksPlugin` owns the lifecycle.
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import shutil
 import subprocess  # noqa: S404 — controlled, list-form only
@@ -55,6 +56,21 @@ _log = structlog.get_logger(__name__)
 _DEFAULT_ALLOWED_HOSTS: frozenset[str] = frozenset({"github.com", "gitlab.com", "bitbucket.org"})
 _DEFAULT_ALLOWED_SCHEMES: frozenset[str] = frozenset({"https"})
 _DENIED_SCHEMES: frozenset[str] = frozenset({"ssh", "git", "file"})
+
+#: Control characters that must never appear in a clone URL.
+#: Pre-merge security review BLOCKER #4: a URL like
+#: ``https://github.com/owner/repo.git\necho pwned`` parsed by
+#: ``urlsplit`` extracts host=``github.com`` (the newline is in the
+#: path, not the netloc) and survives the existing scheme/host
+#: checks.  When git's stderr echoes the URL into the cloner's
+#: error message, the embedded newline fragments the message via
+#: ``splitlines()[-1]`` extraction, letting an attacker control
+#: the trailing line that ends up in ``Scan.failure_reason`` and
+#: structured-log lines.  Reject the whole printable-ASCII control
+#: range upfront.
+_FORBIDDEN_URL_CODEPOINTS: frozenset[str] = frozenset(chr(c) for c in range(0x00, 0x20)) | {
+    chr(0x7F)
+}
 
 _MAX_URL_LENGTH: int = 2048
 _DEFAULT_CLONE_TIMEOUT_S: int = 60
@@ -98,6 +114,31 @@ def _allowed_schemes() -> frozenset[str]:
     return (_DEFAULT_ALLOWED_SCHEMES | user) - _DENIED_SCHEMES
 
 
+def _host_is_ip_literal(host: str) -> bool:
+    """True if ``host`` is an IPv4 / IPv6 literal address.
+
+    Bracketed IPv6 hosts (``[::1]``) come out of ``urlsplit`` with
+    the brackets stripped, so the literal portion is what
+    :func:`ipaddress.ip_address` parses.
+    """
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return True
+
+
+def _path_has_traversal(path: str) -> bool:
+    """True if any path segment is exactly ``..``.
+
+    Doesn't match substrings like ``..foo`` (legitimate filenames
+    in some forks) — segments only.  Both raw ``..`` and the
+    percent-encoded ``%2e%2e`` (case-insensitive) count.
+    """
+    lowered = path.lower().replace("%2e", ".")
+    return any(seg == ".." for seg in lowered.split("/"))
+
+
 def validate_clone_url(git_url: str) -> tuple[str, str]:
     """Reject anything outside the allow-list; return (scheme, host).
 
@@ -112,11 +153,30 @@ def validate_clone_url(git_url: str) -> tuple[str, str]:
     source of truth — API and cloner share allow-list semantics
     so a Target that survives validation is one the cloner will
     accept at scan-time.
+
+    Phase 3 Sprint 1 pre-merge security review BLOCKER #4: extends
+    the validator to reject (in order) control characters,
+    percent-encoded null bytes, raw IP literal hosts (SSRF surface
+    to localhost / RFC1918 / link-local / IPv6 loopback), and
+    ``..`` path-traversal segments.  See the per-block comments
+    below for the threat each one closes.
     """
     if not git_url or len(git_url) > _MAX_URL_LENGTH:
         raise CloneError(
             f"clone URL is empty or longer than {_MAX_URL_LENGTH} characters",
         )
+
+    # Control-character rejection.  Newline / carriage return / tab /
+    # null / etc. in a URL bypass urlsplit's host parser (they end
+    # up in the path) and can poison structured logs and
+    # Scan.failure_reason via the cloner's stderr-tail extraction.
+    # See _FORBIDDEN_URL_CODEPOINTS for the full threat description.
+    if any(ch in _FORBIDDEN_URL_CODEPOINTS for ch in git_url):
+        raise CloneError("clone URL contains a forbidden control character")
+    # Percent-encoded null byte — git decodes %XX at request time;
+    # we'd rather it never reach git's URL parser.
+    if "%00" in git_url.lower():
+        raise CloneError("clone URL contains a percent-encoded null byte")
 
     parts = urlsplit(git_url)
     scheme = parts.scheme.lower()
@@ -128,6 +188,17 @@ def validate_clone_url(git_url: str) -> tuple[str, str]:
         raise CloneError(f"clone scheme {scheme!r} is not on the allow-list")
     if host is None or host == "":
         raise CloneError("clone URL has no host")
+    # Reject IP-literal hosts outright.  An attacker who can post a
+    # Target URL like ``https://169.254.169.254/...`` (AWS metadata),
+    # ``https://10.0.0.1/...`` (RFC1918), ``https://127.0.0.1/...``
+    # or ``https://[::1]/...`` would otherwise SSRF the worker into
+    # the local network.  The host allow-list already rejects these
+    # by name, but defence in depth: ANY raw IP literal is wrong
+    # for a code-host URL.  Operators extending
+    # ``ZYNKSEC_CLONE_ALLOWED_HOSTS`` can only add named hosts,
+    # never bare IPs.
+    if _host_is_ip_literal(host):
+        raise CloneError(f"clone host {host!r} is a raw IP literal (use a hostname)")
     if host.lower() not in _allowed_hosts():
         raise CloneError(f"clone host {host!r} is not on the allow-list")
     # Reject ``userinfo`` outright — credentials should arrive via
@@ -135,6 +206,12 @@ def validate_clone_url(git_url: str) -> tuple[str, str]:
     # in a URL the API persists.
     if parts.username is not None or parts.password is not None:
         raise CloneError("clone URL must not include userinfo (username/password)")
+    # Path-traversal segments would cause git to walk above the
+    # repo root on some servers (e.g. ``../../../etc/passwd``).
+    # Modern git+github reject this server-side, but defence in
+    # depth says: don't even try.
+    if _path_has_traversal(parts.path or ""):
+        raise CloneError("clone URL path contains '..' traversal segments")
 
     return scheme, host.lower()
 
