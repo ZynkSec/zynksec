@@ -309,7 +309,8 @@ def execute_scan(scan_uuid: uuid.UUID, profile: ScanProfile) -> bool:
 
             raw = plugin.run(context)
             findings = list(plugin.normalize(raw, context))
-            _log.info("scan.run.normalized", scan_id=scan_id_str, count=len(findings))
+            findings_count = len(findings)
+            _log.info("scan.run.normalized", scan_id=scan_id_str, count=findings_count)
 
             if findings:
                 with factory() as session:
@@ -340,12 +341,24 @@ def execute_scan(scan_uuid: uuid.UUID, profile: ScanProfile) -> bool:
                     except Exception:
                         session.rollback()
                         raise
+            # Drop raw secrets from local frame ASAP; defense in
+            # depth on top of include_local_variables=False (Phase 3
+            # cleanup item #6).  ``GitleaksFinding`` instances carry
+            # the plaintext ``raw_secret`` field; once the
+            # ``CodeFinding`` rows are persisted (above) the
+            # plaintexts are no longer needed in this scope.
+            # ``findings_count`` was captured upfront so the
+            # subsequent log line doesn't need the list.  Applies
+            # uniformly to ZAP-side findings too — they don't carry
+            # plaintext secrets, but the defensive ``del`` keeps the
+            # pattern consistent.
+            del findings
 
             _mark(factory, "completed", scan_uuid)
             _log.info(
                 "scan.run.complete",
                 scan_id=scan_id_str,
-                findings=len(findings),
+                findings=findings_count,
                 scanner_family=scanner_family,
             )
             if scan_group_uuid is not None:
