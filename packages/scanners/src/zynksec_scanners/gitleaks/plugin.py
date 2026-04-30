@@ -291,10 +291,25 @@ class GitleaksPlugin(ScannerPlugin):
 
         # 0 = clean, 1 = findings present.  Anything else is a real
         # failure (malformed git tree, gitleaks crash, OOM ...).
+        #
+        # Pre-merge security review FINDING #5: do NOT include
+        # gitleaks' stderr in the user-facing exception message.
+        # Some gitleaks debug paths print matched-line excerpts to
+        # stderr; including ``stderr.splitlines()[-1]`` in the
+        # ``RuntimeError`` would let those plaintext fragments
+        # propagate into ``Scan.failure_reason`` (DB-persisted, API-
+        # returned).  The exit code alone is enough for triage; full
+        # stderr is logged at debug level so operators can
+        # investigate without secrets touching the DB or API
+        # response.
         if completed.returncode not in (0, 1):
-            tail = (completed.stderr or "").strip().splitlines()
-            last = tail[-1] if tail else f"exit {completed.returncode}"
-            raise RuntimeError(f"gitleaks failed: {last}")
+            _log.debug(
+                "gitleaks.run.stderr",
+                scan_id=str(context.target.scan_id),
+                exit_code=completed.returncode,
+                stderr_len=len(completed.stderr or ""),
+            )
+            raise RuntimeError(f"gitleaks exited with code {completed.returncode}")
 
         if not report_path.exists():
             # Empty repo / no commits → gitleaks may not write a
