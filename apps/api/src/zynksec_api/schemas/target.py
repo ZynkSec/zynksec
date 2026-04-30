@@ -15,6 +15,19 @@ accept at scan-time.  Hard-denied schemes (``ssh``, ``git``,
 ``file``) are already filtered by ``HttpUrl`` itself; the
 model_validator catches the remaining cases (host not on the
 allow-list, embedded userinfo, length > 2048).
+
+Phase 3 Sprint 1 pre-merge security review FINDING #6: the
+userinfo rejection now applies to ALL kinds, not just ``repo``.
+Pydantic's ``HttpUrl`` accepts ``https://user:pass@example.com/``;
+without an explicit reject, those credentials get persisted on
+``Target.url`` and surface in:
+  * ``_log.error("scan.run.unsupported_target", ..., url=target.url)``
+  * GET /api/v1/scans/{id} response (embedded ``target.url``)
+  * structlog scope on every URL-tagged log line
+
+Userinfo in URLs is universally a bad pattern — credentials
+belong in headers / a token store, not URL strings.  Reject
+across the board.
 """
 
 from __future__ import annotations
@@ -22,6 +35,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, HttpUrl, model_validator
 from zynksec_scanners.repo import CloneError, validate_clone_url
@@ -50,14 +64,34 @@ class TargetCreate(BaseModel):
 
     @model_validator(mode="after")
     def _validate_kind_specific_url(self) -> TargetCreate:
-        """Apply per-kind URL constraints.
+        """Apply universal + per-kind URL constraints.
 
-        Only ``kind="repo"`` adds extra constraints today.  Failures
-        bubble up as :class:`pydantic.ValidationError`, which the
-        canonical-envelope handler in :mod:`zynksec_api.main` flattens
-        into the standard ``{code, message, request_id, details}``
-        shape (CLAUDE.md §4).
+        Universal: reject embedded userinfo (``https://user:pass@host/``)
+        for ALL kinds.  Pydantic's ``HttpUrl`` accepts userinfo by
+        default; without an explicit reject the credentials would
+        persist on ``Target.url`` and surface in logs, the GET
+        response, and structlog scope.  Universal because it's never
+        a good idea regardless of scanner family.
+
+        Per-kind: ``kind="repo"`` additionally goes through
+        :func:`zynksec_scanners.repo.validate_clone_url` (host
+        allow-list, scheme allow-list, control-char rejection,
+        path-traversal rejection, IP-literal SSRF rejection — see
+        the cloner module for the full set).
+
+        Failures bubble up as :class:`pydantic.ValidationError`,
+        which the canonical-envelope handler in
+        :mod:`zynksec_api.main` flattens into the standard
+        ``{code, message, request_id, details}`` shape (CLAUDE.md §4).
         """
+        # Universal: no userinfo in URLs (FINDING #6).
+        parts = urlsplit(str(self.url))
+        if parts.username is not None or parts.password is not None:
+            raise ValueError(
+                "URL must not include userinfo (username / password); "
+                "credentials belong in a token store or auth header, not URL strings",
+            )
+
         if self.kind == "repo":
             try:
                 validate_clone_url(str(self.url))

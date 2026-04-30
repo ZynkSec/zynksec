@@ -11,6 +11,7 @@ from __future__ import annotations
 import uuid
 
 import httpx
+import pytest
 
 
 def _post_target(client: httpx.Client, name: str, url: str = "http://juice-shop:3000/") -> dict:
@@ -94,3 +95,70 @@ def test_create_target_with_duplicate_name_returns_canonical_409(
     assert body["code"] == "target_name_conflict"
     assert name in body["message"]
     assert body["request_id"]
+
+
+# ----------------------------------------------------------------------
+# Phase 3 Sprint 1 pre-merge security review FINDING #6 regression guard
+#
+# Pydantic's ``HttpUrl`` accepts URLs with embedded userinfo
+# (``https://user:pass@example.com/``).  Without an explicit reject,
+# those credentials get persisted on ``Target.url`` and surface in
+# logs, the GET response, and structlog scope.  The model_validator
+# now rejects userinfo for ALL kinds (web_app / api / repo), not
+# just repo.
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "kind",
+    ["web_app", "api", "repo"],
+)
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://user:pass@example.com/",
+        "https://token@example.com/",
+        "https://user:pass@github.com/owner/repo.git",
+        "https://github.com:x@github.com/owner/repo.git",
+    ],
+)
+def test_target_create_rejects_userinfo_in_url(
+    api_client: httpx.Client,
+    kind: str,
+    url: str,
+) -> None:
+    """POST /targets with userinfo in the URL → canonical-envelope 422.
+
+    Cross-product: every (kind, userinfo-shape) pair must be
+    rejected.  Pre-fix, ``kind=web_app`` and ``kind=api`` accepted
+    these URLs because ``validate_clone_url`` only ran for
+    ``kind=repo``.
+
+    The exact error code is ``request_validation_error`` (Pydantic
+    ValidationError flattened by the canonical-envelope handler in
+    :mod:`zynksec_api.main`).  We don't assert the exact wording —
+    Pydantic minor versions tweak messages — but DO assert the URL
+    field was flagged.
+    """
+    response = api_client.post(
+        "/api/v1/targets",
+        json={
+            "name": f"userinfo-{uuid.uuid4().hex[:8]}",
+            "url": url,
+            "kind": kind,
+        },
+    )
+    assert response.status_code == 422, response.text
+    body = response.json()
+    assert body["code"] == "request_validation_error", body
+    assert body["request_id"], body
+    errors = body["details"]["errors"]
+    # The validator runs ``mode="after"`` so Pydantic reports loc
+    # at the model level (``["body"]``) rather than the URL field.
+    # Assert on the error message instead — any of "userinfo" /
+    # "username" / "URL" should appear, since the rejection
+    # explicitly cites the userinfo problem.
+    msgs = [str(err.get("msg", "")).lower() for err in errors]
+    assert any(
+        "userinfo" in msg or "username" in msg or "credentials" in msg for msg in msgs
+    ), f"no userinfo-related error message found in {body}"
