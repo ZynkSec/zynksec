@@ -279,12 +279,35 @@ class SemgrepPlugin(ScannerPlugin):
         the worker dispatches by ``plugin.id`` to
         :func:`code_findings_from_semgrep` for row construction.
         Yields ``Any`` to satisfy the abstract signature.
+
+        Path normalisation: Semgrep emits ``entry["path"]`` as the
+        absolute path of the matched file (e.g.
+        ``/tmp/zynksec-scans/<scan_id>/repo/foo.py``).  Gitleaks
+        emits repo-relative paths (e.g. ``foo.py``).  CodeFinding
+        rows must use repo-relative paths for cross-scan dedup +
+        operator-facing UIs to make sense — strip the repo-root
+        prefix here so the persisted ``file_path`` looks the same
+        regardless of which scanner produced it.
         """
         del context  # semgrep output is self-contained
+        repo_root = self._handle.path if self._handle is not None else None
         for entry in raw.payload.get("results", []):
             try:
                 rule_id = str(entry["check_id"])
-                file_path = str(entry["path"])
+                raw_path = str(entry["path"])
+                # Path is relative-to-repo IF Semgrep emitted an
+                # absolute path under the cloned repo root.  The
+                # alternative — a relative path — survives unchanged.
+                if repo_root is not None:
+                    abs_repo = str(repo_root)
+                    if raw_path.startswith(abs_repo + "/"):
+                        file_path = raw_path[len(abs_repo) + 1 :]
+                    elif raw_path == abs_repo:
+                        file_path = ""
+                    else:
+                        file_path = raw_path
+                else:
+                    file_path = raw_path
                 start = entry.get("start") or {}
                 line_number = int(start.get("line") or 0)
                 column_number_value = start.get("col")

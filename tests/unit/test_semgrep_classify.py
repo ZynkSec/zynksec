@@ -81,3 +81,71 @@ def test_truncate_preview_handles_empty_input() -> None:
     # ``None`` is type-erased to str at the call site, but
     # exercise the fallback to be safe.
     assert _truncate_preview(None) == ""  # type: ignore[arg-type]
+
+
+def test_semgrep_normalize_strips_repo_prefix(tmp_path: object) -> None:
+    """SemgrepPlugin.normalize emits repo-relative file paths.
+
+    Semgrep prints the absolute path of every match
+    (``/tmp/zynksec-scans/<scan_id>/repo/foo.py``); CodeFinding
+    rows must persist repo-relative paths so cross-scan dedup
+    works and operator UIs render sensibly.  This test runs the
+    plugin's ``normalize`` against a synthesised RawScanResult
+    and asserts the absolute path is stripped to repo-relative.
+    """
+    from pathlib import Path  # noqa: PLC0415
+    from uuid import uuid4  # noqa: PLC0415
+
+    from zynksec_scanners.repo.cloner import RepoHandle  # noqa: PLC0415
+    from zynksec_scanners.semgrep.plugin import SemgrepPlugin  # noqa: PLC0415
+    from zynksec_scanners.types import (  # noqa: PLC0415
+        RawScanResult,
+        ScanContext,
+        ScanProfile,
+        ScanTarget,
+    )
+
+    repo_root = Path(str(tmp_path)) / "repo"
+    repo_root.mkdir(parents=True)
+
+    plugin = SemgrepPlugin(semgrep_bin="/usr/bin/true")
+    plugin._handle = RepoHandle(  # type: ignore[assignment]
+        path=repo_root,
+        git_url="https://github.com/synthetic/repo.git",
+    )
+
+    target = ScanTarget(
+        kind="repo",
+        url="https://github.com/synthetic/repo.git",
+        project_id=uuid4(),
+        scan_id=uuid4(),
+        scan_profile=ScanProfile.PASSIVE,
+    )
+    raw = RawScanResult(
+        engine="semgrep",
+        payload={
+            "results": [
+                {
+                    "check_id": "python.lang.security.audit.eval-detected.eval-detected",
+                    "path": f"{repo_root}/semgrep-plants/eval_handler.py",
+                    "start": {"line": 5, "col": 12},
+                    "extra": {"severity": "WARNING", "lines": "    eval(x)"},
+                },
+                # Already-relative path passes through unchanged.
+                {
+                    "check_id": "python.lang.security.audit.x.y",
+                    "path": "already/relative.py",
+                    "start": {"line": 1, "col": 1},
+                    "extra": {"severity": "INFO", "lines": "x"},
+                },
+            ]
+        },
+    )
+
+    findings = list(plugin.normalize(raw, ScanContext(target=target)))
+    paths = [f.file_path for f in findings]
+    assert "semgrep-plants/eval_handler.py" in paths, paths
+    assert "already/relative.py" in paths, paths
+    # No absolute paths (every entry is repo-relative).
+    for p in paths:
+        assert not p.startswith("/"), f"absolute path leaked into normalize output: {p!r}"
