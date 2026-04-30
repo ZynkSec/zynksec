@@ -20,13 +20,26 @@ from zynksec_db import (
     ScanRepository,
     TargetRepository,
 )
-from zynksec_scanners import SCANNER_GITLEAKS, scanner_for_kind
+from zynksec_scanners import (
+    SCANNER_GITLEAKS,
+    resolve_scanner,
+    scanner_for_kind,
+    scanners_for_kind,
+)
+from zynksec_scanners import (
+    UnknownScanner as RegistryUnknownScanner,
+)
 from zynksec_schema import ScanProfile, code_queue, zap_queue_for_index
 
 from zynksec_api.celery_client import enqueue_scan_to_queue
 from zynksec_api.config import get_settings
 from zynksec_api.db import get_session
-from zynksec_api.exceptions import ScanNotFound, ScanTargetSpecConflict, TargetNotFound
+from zynksec_api.exceptions import (
+    ScanNotFound,
+    ScanTargetSpecConflict,
+    TargetNotFound,
+    UnknownScanner,
+)
 from zynksec_api.routers._project_resolution import resolve_project_for_request
 from zynksec_api.schemas import (
     CodeFindingRead,
@@ -105,6 +118,7 @@ def _scan_to_read(
         completed_at=scan.completed_at,
         failure_reason=scan.failure_reason,
         created_at=scan.created_at,
+        scanner=scan.scanner,
         findings=findings,  # type: ignore[arg-type]
         code_findings=code_findings or [],
     )
@@ -169,11 +183,29 @@ def create_scan(
         project_id = project.id
         target_url_value = str(body.target_url)
 
+    # Phase 3 Sprint 2: resolve the scanner name.  ``body.scanner``
+    # is None for the default-pick path; an explicit value is
+    # validated against the registry.  Mismatch surfaces as a
+    # canonical-envelope 422 ``unknown_scanner`` with
+    # ``details.available`` listing the valid scanners for this
+    # kind so callers can pick a working name.
+    try:
+        resolved_scanner = resolve_scanner(target_kind, body.scanner)  # type: ignore[arg-type]
+    except RegistryUnknownScanner as exc:
+        raise UnknownScanner(
+            f"scanner {body.scanner!r} is not available for kind {target_kind!r}",
+            details={
+                "requested": body.scanner,
+                "kind": target_kind,
+                "available": sorted(scanners_for_kind(target_kind)),  # type: ignore[arg-type]
+            },
+        ) from exc
+
     # Phase 3 Sprint 1: scanner family routing.  ``repo`` Targets
-    # land on ``code_q`` (gitleaks et al.); everything else stays on
-    # the per-pair ZAP queues.  The legacy ``target_url`` POST has
-    # no Target row so kind defaults to ``web_app`` and routes to
-    # ZAP — preserving existing client behaviour.
+    # land on ``code_q`` (gitleaks / semgrep); everything else
+    # stays on the per-pair ZAP queues.  The legacy ``target_url``
+    # POST has no Target row so kind defaults to ``web_app`` and
+    # routes to ZAP — preserving existing client behaviour.
     queue = _queue_for_kind(target_kind, session, repo)
 
     scan = Scan(
@@ -183,6 +215,10 @@ def create_scan(
         scan_profile=body.scan_profile.value,
         status="queued",
         assigned_queue=queue,
+        # Persist the RESOLVED name (not the user input).  Sprint 1
+        # cleanup item #10 contract: API write-time and worker
+        # run-time agree on the scanner identity.
+        scanner=resolved_scanner,
     )
     repo.add(session, scan)
     session.commit()
