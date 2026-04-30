@@ -47,7 +47,11 @@ class CodeFindingRead(BaseModel):
     id: uuid.UUID
     scan_id: uuid.UUID
     file_path: str
-    line_number: int
+    # Phase 3 Sprint 3: nullable.  Gitleaks + Semgrep emit precise
+    # line numbers; OSV-Scanner findings are package-shaped (no
+    # line context).  See ``zynksec_db.models.code_finding``
+    # docstring for the per-scanner mapping.
+    line_number: int | None
     column_number: int | None
     rule_id: str
     secret_kind: str | None

@@ -102,7 +102,15 @@ class CodeFinding(Base):
 
     # ---------- Location (file + line, not URL + method) ----------
     file_path: Mapped[str] = mapped_column(String(2048), nullable=False)
-    line_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Phase 3 Sprint 3: nullable.  Gitleaks + Semgrep emit precise
+    # line numbers (the matched secret / SAST pattern is on a
+    # specific line); OSV-Scanner emits findings keyed to the
+    # AFFECTED PACKAGE in a lockfile, not a specific line — the
+    # underlying API doesn't surface line numbers for lockfile
+    # entries.  Rather than fabricate a sentinel (0 / 1 /
+    # best-effort grep), persist NULL and let consumers know "no
+    # line info" honestly.
+    line_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
     column_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     # ---------- Rule metadata ----------
