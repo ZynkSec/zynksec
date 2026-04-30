@@ -220,8 +220,10 @@ def test_scancreate_unknown_scanner_returns_422(
     assert details.get("requested") == "nonexistent", details
     assert details.get("kind") == "repo", details
     available = set(details.get("available") or [])
-    # Valid kind=repo scanners post-Sprint-2.
-    assert {"gitleaks", "semgrep"}.issubset(available), available
+    # Valid kind=repo scanners post-Sprint-3 — OSV-Scanner joined
+    # alongside gitleaks + semgrep.  Subset assertion future-proofs
+    # against later additions (Trivy, Grype, ...).
+    assert {"gitleaks", "semgrep", "osv-scanner"}.issubset(available), available
 
 
 def test_repo_scan_default_scanner_is_gitleaks(
