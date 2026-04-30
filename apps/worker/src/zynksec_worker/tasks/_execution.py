@@ -24,8 +24,9 @@ from functools import lru_cache
 
 import structlog
 from sqlalchemy.orm import Session, sessionmaker
-from zynksec_db import Finding as FindingRow
+from zynksec_db import CodeFinding as CodeFindingRow
 from zynksec_db import (
+    CodeFindingRepository,
     FindingRepository,
     Scan,
     ScanGroupRepository,
@@ -33,17 +34,25 @@ from zynksec_db import (
     engine_from_url,
     make_session_factory,
 )
-from zynksec_scanners import ScannerPlugin, ScanTarget
+from zynksec_db import Finding as FindingRow
+from zynksec_scanners import (
+    SCANNER_GITLEAKS,
+    ScannerPlugin,
+    ScanTarget,
+    scanner_for_kind,
+)
+from zynksec_scanners.gitleaks.plugin import code_findings_from_gitleaks
 from zynksec_scanners.types import TargetKind
-from zynksec_schema import Finding, ScanProfile, zap_queue_for_index
+from zynksec_schema import Finding, ScanProfile, code_queue, zap_queue_for_index
 
 from zynksec_worker.config import get_settings
-from zynksec_worker.runners import build_zap_plugin
+from zynksec_worker.runners import build_plugin_for
 
 _log = structlog.get_logger(__name__)
 
 _scan_repo = ScanRepository()
 _finding_repo = FindingRepository()
+_code_finding_repo = CodeFindingRepository()
 _group_repo = ScanGroupRepository()
 
 
@@ -220,19 +229,23 @@ def execute_scan(scan_uuid: uuid.UUID, profile: ScanProfile) -> bool:
     factory = session_factory()
     settings = get_settings()
 
-    # Worker-pair bindings stay constant for the lifetime of this
-    # process (the worker is pinned to one ZAP / one queue) but
-    # binding them per-task makes the JSON log lines self-contained
-    # — every entry advertises which pair produced it without the
-    # reader needing to correlate with worker startup logs.
-    zap_index = settings.worker_zap_index
-    assigned_queue = zap_queue_for_index(zap_index)
-
-    structlog.contextvars.bind_contextvars(
-        scan_id=scan_id_str,
-        zap_index=zap_index,
-        assigned_queue=assigned_queue,
-    )
+    # Per-process bindings on the worker.  Phase 2: ZAP workers pin
+    # to one daemon + one queue and surface ``zap_index`` /
+    # ``assigned_queue`` on every log line.  Phase 3 Sprint 1: code
+    # workers don't have a ZAP daemon to pin to and consume from
+    # ``code_q``; they bind ``assigned_queue`` only.  Either way,
+    # the reader sees which worker family + queue produced a log
+    # line without correlating with worker startup logs.
+    base_bindings: dict[str, str | int] = {"scan_id": scan_id_str}
+    bound_zap_index = False
+    if settings.worker_family == "zap":
+        zap_index = settings.worker_zap_index
+        base_bindings["zap_index"] = zap_index
+        base_bindings["assigned_queue"] = zap_queue_for_index(zap_index)
+        bound_zap_index = True
+    else:
+        base_bindings["assigned_queue"] = code_queue()
+    structlog.contextvars.bind_contextvars(**base_bindings)
     bound_group_id = False
     try:
         _log.info("scan.run.start", scan_id=scan_id_str, scan_profile=profile.value)
@@ -251,7 +264,15 @@ def execute_scan(scan_uuid: uuid.UUID, profile: ScanProfile) -> bool:
 
         _mark(factory, "running", scan_uuid)
 
-        plugin: ScannerPlugin = build_zap_plugin(settings)
+        # Phase 3 Sprint 1: pick the right plugin for the Target's
+        # kind via the canonical registry (zynksec_scanners.registry).
+        # ZAP for web_app / api; gitleaks for repo.  A worker that
+        # receives a task it can't service (e.g. code-worker getting
+        # a web_app scan via a misconfigured queue) will surface the
+        # mismatch via :meth:`plugin.supports` returning False below
+        # — we fail loudly rather than silently route.
+        plugin: ScannerPlugin = build_plugin_for(target.kind, settings)
+        scanner_family = scanner_for_kind(target.kind)
 
         if not plugin.supports(target):
             _mark(factory, "failed", scan_uuid, reason="no scanner supports this target")
@@ -281,17 +302,40 @@ def execute_scan(scan_uuid: uuid.UUID, profile: ScanProfile) -> bool:
             if findings:
                 with factory() as session:
                     try:
-                        _finding_repo.add_many(
-                            session,
-                            [_finding_to_row(f) for f in findings],
-                        )
+                        if scanner_family == SCANNER_GITLEAKS:
+                            # Gitleaks emits engine-native
+                            # ``GitleaksFinding`` objects, not the
+                            # canonical HTTP-shaped Finding —
+                            # ``code_findings_from_gitleaks`` redacts
+                            # the raw secret + computes the hash
+                            # before constructing ``CodeFinding``
+                            # rows (CLAUDE.md §6: plaintext secrets
+                            # never reach the DB).
+                            rows = [
+                                CodeFindingRow(**kwargs)
+                                for kwargs in code_findings_from_gitleaks(
+                                    findings,
+                                    scan_id=scan_uuid,
+                                )
+                            ]
+                            _code_finding_repo.add_many(session, rows)
+                        else:
+                            _finding_repo.add_many(
+                                session,
+                                [_finding_to_row(f) for f in findings],
+                            )
                         session.commit()
                     except Exception:
                         session.rollback()
                         raise
 
             _mark(factory, "completed", scan_uuid)
-            _log.info("scan.run.complete", scan_id=scan_id_str, findings=len(findings))
+            _log.info(
+                "scan.run.complete",
+                scan_id=scan_id_str,
+                findings=len(findings),
+                scanner_family=scanner_family,
+            )
             if scan_group_uuid is not None:
                 _maybe_log_group_terminal(scan_group_uuid, factory)
             return True
@@ -320,12 +364,13 @@ def execute_scan(scan_uuid: uuid.UUID, profile: ScanProfile) -> bool:
                     )
     finally:
         # Clear per-task bindings so the next task on this worker
-        # doesn't inherit stale ids.  ``zap_index`` / ``assigned_queue``
-        # could in principle stay bound (they're constant for the
-        # process) but clearing them keeps the symmetry simple —
-        # ``task_prerun`` re-binds correlation_id from scratch on
-        # every task too.
-        keys = ["scan_id", "zap_index", "assigned_queue"]
+        # doesn't inherit stale ids.  ``assigned_queue`` could in
+        # principle stay bound (it's constant for the process) but
+        # clearing keeps the symmetry simple — ``task_prerun``
+        # re-binds correlation_id from scratch on every task too.
+        keys = ["scan_id", "assigned_queue"]
+        if bound_zap_index:
+            keys.append("zap_index")
         if bound_group_id:
             keys.append("scan_group_id")
         structlog.contextvars.unbind_contextvars(*keys)

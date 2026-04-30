@@ -44,6 +44,14 @@ class WorkerSettings(BaseSettings):
     zap_api_key: str = "changeme-local-only"
     worker_zap_index: int = Field(default=1, ge=1)
     zap_instance_count: int = Field(default=2, ge=1)
+    # Phase 3 Sprint 1: worker family selector — one of ``"zap"`` or
+    # ``"code"``.  ``zap`` is the default so existing worker1 / worker2
+    # services in compose keep working with no env-var change; the
+    # new ``code-worker`` service in compose sets ``WORKER_FAMILY=code``
+    # to opt out of the ZAP-specific structlog bindings (worker_zap_index,
+    # assigned_queue) and to let the dispatcher know it shouldn't
+    # require those settings.
+    worker_family: Literal["zap", "code"] = "zap"
 
 
 @lru_cache(maxsize=1)

@@ -13,15 +13,29 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session
-from zynksec_db import FindingRepository, Scan, ScanRepository, TargetRepository
-from zynksec_schema import ScanProfile, zap_queue_for_index
+from zynksec_db import (
+    CodeFindingRepository,
+    FindingRepository,
+    Scan,
+    ScanRepository,
+    TargetRepository,
+)
+from zynksec_scanners import SCANNER_GITLEAKS, scanner_for_kind
+from zynksec_schema import ScanProfile, code_queue, zap_queue_for_index
 
 from zynksec_api.celery_client import enqueue_scan_to_queue
 from zynksec_api.config import get_settings
 from zynksec_api.db import get_session
 from zynksec_api.exceptions import ScanNotFound, ScanTargetSpecConflict, TargetNotFound
 from zynksec_api.routers._project_resolution import resolve_project_for_request
-from zynksec_api.schemas import ScanCreate, ScanRead, TargetSummary, finding_from_row
+from zynksec_api.schemas import (
+    CodeFindingRead,
+    ScanCreate,
+    ScanRead,
+    TargetSummary,
+    code_finding_from_row,
+    finding_from_row,
+)
 
 router = APIRouter(prefix="/api/v1/scans", tags=["scans"])
 
@@ -36,6 +50,11 @@ def get_finding_repository() -> FindingRepository:
     return FindingRepository()
 
 
+def get_code_finding_repository() -> CodeFindingRepository:
+    """FastAPI dependency — returns a fresh :class:`CodeFindingRepository`."""
+    return CodeFindingRepository()
+
+
 def get_target_repository() -> TargetRepository:
     """FastAPI dependency — returns a fresh :class:`TargetRepository`."""
     return TargetRepository()
@@ -46,15 +65,20 @@ def get_target_repository() -> TargetRepository:
 SessionDep = Annotated[Session, Depends(get_session)]
 ScanRepoDep = Annotated[ScanRepository, Depends(get_scan_repository)]
 FindingRepoDep = Annotated[FindingRepository, Depends(get_finding_repository)]
+CodeFindingRepoDep = Annotated[CodeFindingRepository, Depends(get_code_finding_repository)]
 TargetRepoDep = Annotated[TargetRepository, Depends(get_target_repository)]
 
 
-def _scan_to_read(scan: Scan, findings: list[object]) -> ScanRead:
+def _scan_to_read(
+    scan: Scan,
+    findings: list[object],
+    code_findings: list[CodeFindingRead] | None = None,
+) -> ScanRead:
     """Explicit ORM -> Pydantic construction.
 
     Constructed field-by-field (rather than ``model_validate(scan)``)
-    so the ``findings`` list is always well-typed — the ORM row has
-    no ``findings`` attribute.
+    so the ``findings`` / ``code_findings`` lists are always
+    well-typed — the ORM row has no such attribute.
 
     The ``target`` field is built lazily from the loaded relationship
     when ``scan.target_id`` is set, ``None`` otherwise (legacy
@@ -82,6 +106,7 @@ def _scan_to_read(scan: Scan, findings: list[object]) -> ScanRead:
         failure_reason=scan.failure_reason,
         created_at=scan.created_at,
         findings=findings,  # type: ignore[arg-type]
+        code_findings=code_findings or [],
     )
 
 
@@ -127,6 +152,7 @@ def create_scan(
         raise ScanTargetSpecConflict("exactly one of 'target_id' or 'target_url' must be provided")
 
     target_id_persisted: uuid.UUID | None = None
+    target_kind: str = "web_app"  # legacy ``target_url``-only POSTs
     if body.target_id is not None:
         target = target_repo.get(session, body.target_id)
         if target is None:
@@ -134,6 +160,7 @@ def create_scan(
         project_id = target.project_id
         target_url_value = target.url
         target_id_persisted = target.id
+        target_kind = target.kind
     else:
         # ``target_url`` legacy path.  ``body.target_url`` is HttpUrl
         # at this point (Pydantic validated); ``str()`` makes the
@@ -142,16 +169,12 @@ def create_scan(
         project_id = project.id
         target_url_value = str(body.target_url)
 
-    # Phase 2 Sprint 3: pick the per-pair queue BEFORE the insert so
-    # the row carries its ``assigned_queue`` from the very first
-    # commit — no second UPDATE.  Rotation cursor is "row count
-    # modulo N", computed inside the same transaction so two
-    # concurrent POSTs see consistent neighbours and tend to
-    # alternate (Postgres serializable isolation isn't required;
-    # MVCC + the count's commit-ordering settle it correctly enough
-    # for the legacy path's "approximately fair" guarantee).
-    instance_index = _next_instance_index(session, repo)
-    queue = zap_queue_for_index(instance_index)
+    # Phase 3 Sprint 1: scanner family routing.  ``repo`` Targets
+    # land on ``code_q`` (gitleaks et al.); everything else stays on
+    # the per-pair ZAP queues.  The legacy ``target_url`` POST has
+    # no Target row so kind defaults to ``web_app`` and routes to
+    # ZAP — preserving existing client behaviour.
+    queue = _queue_for_kind(target_kind, session, repo)
 
     scan = Scan(
         project_id=project_id,
@@ -170,6 +193,29 @@ def create_scan(
     enqueue_scan_to_queue(str(scan.id), body.scan_profile.value, queue=queue)
     # Freshly queued scans have no findings yet.
     return _scan_to_read(scan, findings=[])
+
+
+def _queue_for_kind(
+    target_kind: str,
+    session: Session,
+    repo: ScanRepository,
+) -> str:
+    """Map ``Target.kind`` to the Celery queue this scan dispatches on.
+
+    Phase 3 Sprint 1: ``repo`` -> ``code_q`` (gitleaks code-worker
+    family); ``web_app`` / ``api`` -> per-pair ZAP queue picked by
+    the rotation cursor below.  The registry in
+    :mod:`zynksec_scanners.registry` is the source of truth for the
+    family mapping; we read it here so a future scanner-family
+    addition (e.g. trivy on its own queue) is one registry edit
+    plus a queue helper, no router edits.
+    """
+    family = scanner_for_kind(target_kind)  # type: ignore[arg-type]
+    if family == SCANNER_GITLEAKS:
+        return code_queue()
+    # ZAP family: rotation-cursor across the per-pair queues.
+    instance_index = _next_instance_index(session, repo)
+    return zap_queue_for_index(instance_index)
 
 
 def _next_instance_index(session: Session, repo: ScanRepository) -> int:
@@ -205,10 +251,26 @@ def get_scan(
     session: SessionDep,
     repo: ScanRepoDep,
     finding_repo: FindingRepoDep,
+    code_finding_repo: CodeFindingRepoDep,
 ) -> ScanRead:
     scan = repo.get(session, scan_id)
     if scan is None:
         raise ScanNotFound(f"scan {scan_id} does not exist")
+
+    # Phase 3 Sprint 1: which finding family this scan produced
+    # depends on the Target's kind.  Repo-scanner scans live in
+    # ``code_findings``; ZAP scans in ``findings``.  Reading both
+    # blindly would double the query load on every GET; instead we
+    # branch.  Legacy ``target_url`` scans (no Target row) default
+    # to ZAP / ``findings``.
+    target_kind = scan.target.kind if scan.target is not None else "web_app"
+    if scanner_for_kind(target_kind) == SCANNER_GITLEAKS:  # type: ignore[arg-type]
+        code_finding_rows = code_finding_repo.list_by_scan(session, scan_id)
+        return _scan_to_read(
+            scan,
+            findings=[],
+            code_findings=[code_finding_from_row(row) for row in code_finding_rows],
+        )
 
     finding_rows = finding_repo.list(session, scan_id=scan_id)
     findings = [finding_from_row(row) for row in finding_rows]

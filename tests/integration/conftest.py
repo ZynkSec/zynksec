@@ -134,6 +134,16 @@ def _compose_up() -> Iterator[None]:
         # until every service either becomes healthy or, for one-shots,
         # exits 0 — so when ``up -d`` returns, the DVWA schema is
         # initialised and the test fixture can scan immediately.
+        # Phase 3 Sprint 1 adds ``code-worker`` (gitleaks) +
+        # ``gitfixture`` (HTTP-served bare repo with planted secrets)
+        # so the new repo-scanner family has its dispatch path + a
+        # known-vulnerable target available the same way juice-shop /
+        # dvwa work for the ZAP family.  ``gitfixture`` has no
+        # healthcheck (a tiny ``python -m http.server`` doesn't justify
+        # the ceremony); ``--wait`` blocks until it's started, and
+        # the integration test that scans against it will surface a
+        # transient connection error if the server is somehow not
+        # listening — but in practice it's ready inside a second.
         _run(
             _compose(
                 "up",
@@ -144,6 +154,7 @@ def _compose_up() -> Iterator[None]:
                 "redis",
                 "worker1",
                 "worker2",
+                "code-worker",
                 "api",
                 "mailpit",
                 "zap1",
@@ -152,6 +163,7 @@ def _compose_up() -> Iterator[None]:
                 "dvwa-db",
                 "dvwa",
                 "dvwa-init",
+                "gitfixture",
             )
         )
 

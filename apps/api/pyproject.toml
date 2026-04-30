@@ -24,6 +24,12 @@ dependencies = [
   "sentry-sdk[fastapi]>=2.0,<3",
   "zynksec-schema",
   "zynksec-db",
+  # Phase 3 Sprint 1: the API imports the canonical
+  # ``TargetKind -> scanner-family`` registry + the cloner's URL
+  # allow-list validator from this package.  No engine-specific
+  # heavy deps come along for the ride — the registry / validator
+  # modules are pure Python.
+  "zynksec-scanners",
 ]
 
 [project.scripts]
@@ -39,3 +45,4 @@ packages = ["src/zynksec_api"]
 [tool.uv.sources]
 zynksec-schema = { workspace = true }
 zynksec-db = { workspace = true }
+zynksec-scanners = { workspace = true }

@@ -19,12 +19,13 @@ from zynksec_schema.finding import (
     Taxonomy,
 )
 from zynksec_schema.fingerprint import compute_fingerprint, normalize_url
-from zynksec_schema.queues import zap_queue_for_index
+from zynksec_schema.queues import CODE_QUEUE, code_queue, zap_queue_for_index
 from zynksec_schema.scan_profile import ScanProfile
 
 __version__ = "0.0.0"
 
 __all__ = [
+    "CODE_QUEUE",
     "Confidence",
     "Engine",
     "Evidence",
@@ -37,6 +38,7 @@ __all__ = [
     "SeverityLevel",
     "Taxonomy",
     "__version__",
+    "code_queue",
     "compute_fingerprint",
     "normalize_url",
     "zap_queue_for_index",

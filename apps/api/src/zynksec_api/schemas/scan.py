@@ -12,6 +12,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 from zynksec_schema import ScanProfile
 
+from zynksec_api.schemas.code_finding import CodeFindingRead
 from zynksec_api.schemas.finding import FindingRead
 from zynksec_api.schemas.target import TargetSummary
 
@@ -94,3 +95,11 @@ class ScanRead(BaseModel):
     failure_reason: str | None = None
     created_at: datetime
     findings: list[FindingRead] = Field(default_factory=list)
+    # Phase 3 Sprint 1: repo-scanner findings (gitleaks; Phase 3
+    # Sprint 2+: semgrep / trivy / OSV / syft / grype) live in a
+    # separate table with a file-shape contract that doesn't map
+    # to the HTTP-shaped :class:`FindingRead`.  Empty for ZAP scans;
+    # populated for kind=repo scans (the GET handler picks the right
+    # list based on the resolved Target kind, so a scan never carries
+    # both lists populated at once).
+    code_findings: list[CodeFindingRead] = Field(default_factory=list)

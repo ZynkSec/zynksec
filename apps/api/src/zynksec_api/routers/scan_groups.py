@@ -47,7 +47,8 @@ from zynksec_db import (
     Target,
     TargetRepository,
 )
-from zynksec_schema import ScanProfile, zap_queue_for_index
+from zynksec_scanners import SCANNER_GITLEAKS, scanner_for_kind
+from zynksec_schema import ScanProfile, code_queue, zap_queue_for_index
 
 from zynksec_api.celery_client import enqueue_scan_to_queue
 from zynksec_api.config import get_settings
@@ -257,10 +258,15 @@ def create_scan_group(
     )
     group_repo.add(session, group)
 
-    # Phase 2 Sprint 3: round-robin children across the per-pair
-    # queues.  Index ``i`` lands on ``zap_q_{(i % N) + 1}`` so a
-    # 2-target group with ``N=2`` distributes (zap_q_1, zap_q_2);
-    # a 3-target group with ``N=2`` lands (zap_q_1, zap_q_2, zap_q_1).
+    # Phase 2 Sprint 3: round-robin ZAP children across the per-pair
+    # queues.  Phase 3 Sprint 1: ``repo`` children skip the rotation
+    # entirely and land on ``code_q``.  Mixed groups (e.g. one web_app
+    # + one repo) distribute correctly: ZAP children round-robin
+    # against each other, repo children all share ``code_q``.  We
+    # increment a separate ``zap_idx`` cursor that ONLY advances on
+    # ZAP children so a leading repo child doesn't shift the ZAP
+    # rotation by one.
+    #
     # Persisting ``assigned_queue`` on the child Scan row inside
     # the same transaction means the queue selection is committed
     # atomically with the child itself — no risk of an enqueue
@@ -271,8 +277,14 @@ def create_scan_group(
     # ``created_at, id`` ordering reproduces it.
     children: list[Scan] = []
     child_queues: list[str] = []
-    for i, target in enumerate(targets):
-        queue = zap_queue_for_index((i % n_instances) + 1)
+    zap_idx = 0
+    for target in targets:
+        family = scanner_for_kind(target.kind)  # type: ignore[arg-type]
+        if family == SCANNER_GITLEAKS:
+            queue = code_queue()
+        else:
+            queue = zap_queue_for_index((zap_idx % n_instances) + 1)
+            zap_idx += 1
         child = Scan(
             project_id=project.id,
             target_url=target.url,
