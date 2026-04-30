@@ -215,7 +215,6 @@ class GitleaksPlugin(ScannerPlugin):
 
     id = "gitleaks"
     display_name = "Gitleaks"
-    engine_version = "8.18"
     supported_target_kinds: set[str] = {"repo"}
     supported_intensities: set[str] = {ScanProfile.PASSIVE.value}
     required_capabilities: set[str] = set()
@@ -231,6 +230,14 @@ class GitleaksPlugin(ScannerPlugin):
         self._gitleaks = gitleaks_bin or self._GITLEAKS_BIN
         self._exit_stack: ExitStack | None = None
         self._handle: RepoHandle | None = None
+        # Phase 3 cleanup item #9c: discover the actual gitleaks
+        # version once at instantiation rather than carrying a
+        # hardcoded class-attribute that drifts from the
+        # Dockerfile-pinned binary.  Falls back to ``"unknown"``
+        # if the ``gitleaks version`` probe fails — version-
+        # detection is observability-only, never a reason to crash
+        # the worker on startup.
+        self.engine_version: str = self._detect_engine_version()
 
     # ---- contract ----
     def supports(self, target: ScanTarget) -> bool:
@@ -462,6 +469,34 @@ class GitleaksPlugin(ScannerPlugin):
                 "is the code-worker image built from "
                 "infra/docker/code-worker.Dockerfile?",
             )
+
+    def _detect_engine_version(self) -> str:
+        """Run ``gitleaks version`` once and return the parsed string.
+
+        Observability-only: the value is cached on the instance and
+        echoed in ``ScanContext.metadata['engine_version']`` so log
+        readers can see which gitleaks binary actually ran.  Any
+        failure (binary missing, subprocess crash, weird output)
+        falls back to ``"unknown"`` rather than raising — the
+        worker should still be able to scan even if version
+        detection blips.
+        """
+        if shutil.which(self._gitleaks) is None:
+            return "unknown"
+        try:
+            completed = subprocess.run(  # noqa: S603 — list-form, fixed args
+                [self._gitleaks, "version"],
+                check=False,
+                timeout=5,
+                capture_output=True,
+                text=True,
+                stdin=subprocess.DEVNULL,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return "unknown"
+        if completed.returncode != 0:
+            return "unknown"
+        return (completed.stdout or "").strip() or "unknown"
 
 
 def code_findings_from_gitleaks(

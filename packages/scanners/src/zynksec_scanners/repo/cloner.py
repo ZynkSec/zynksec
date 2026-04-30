@@ -324,7 +324,11 @@ def clone_shallow(
         ref-not-found).  The wrapping strips stderr down to the
         last line so we don't leak whatever git printed verbatim.
     """
-    validate_clone_url(git_url)
+    # Capture the parsed (scheme, host) from validate_clone_url so
+    # the logger below doesn't have to re-parse the URL.  Phase 3
+    # cleanup item #9a — pre-cleanup the result was discarded and
+    # the host extracted via a second ``urlsplit`` call.
+    _scheme, host = validate_clone_url(git_url)
 
     root = _scan_root(scan_id)
     target = root / "repo"
@@ -355,8 +359,11 @@ def clone_shallow(
     _log.info(
         "repo.clone.start",
         scan_id=scan_id,
-        # URL is intentionally NOT logged — see ``_validate_clone_url``.
-        host=urlsplit(git_url).hostname,
+        # Full URL is intentionally NOT logged — it could carry a
+        # userinfo segment we'd rather not leak.  See
+        # ``validate_clone_url`` for the rejection rules and the
+        # rationale.
+        host=host,
     )
     try:
         subprocess.run(  # noqa: S603 — list-form, validated URL

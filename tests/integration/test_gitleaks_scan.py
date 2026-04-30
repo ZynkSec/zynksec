@@ -52,11 +52,15 @@ _TERMINAL_BUDGET_S = 180.0
 
 _FIXTURE_REPO_URL = "http://gitfixture/vulnerable-repo.git"
 
-# Plant catalogue — must match ``tests/fixtures/vulnerable-repo-src/``.
+# Plant catalogue — must match the inline plants constructed in
+# ``tests/fixtures/gitfixture.Dockerfile`` (the original
+# ``vulnerable-repo-src/`` directory was removed during the
+# Sprint 1 PR's restructure; plants are now built at image-build
+# time from split / base64-encoded fragments).
 # File paths are relative to the repo root (which is what gitleaks
 # emits and what ``CodeFinding.file_path`` stores).  Line numbers are
 # 1-indexed and account for the leading comment lines in each plant
-# file — adjust here if the fixture files change.
+# file — adjust here if the Dockerfile fixture changes.
 _EXPECTED_PLANTS: list[dict[str, object]] = [
     {
         "file_path": "config/aws_credentials.txt",

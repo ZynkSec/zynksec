@@ -103,7 +103,12 @@ def downgrade() -> None:
     op.drop_index("ix_code_findings_secret_hash", table_name="code_findings")
     op.drop_index("ix_code_findings_scan_id_severity", table_name="code_findings")
     op.drop_table("code_findings")
-    # Postgres ENUM types are independent of any one column — drop
-    # the type explicitly so a re-up doesn't trip
-    # ``DuplicateObject``.
+    # Postgres-specific cleanup: Postgres ENUM types are independent
+    # of any one column — drop the type explicitly so a re-up
+    # doesn't trip ``DuplicateObject``.  On other backends
+    # (SQLite / MySQL / etc.) ``sa.Enum.drop`` is a no-op because
+    # those dialects don't carry a separate type registry.  Zynksec
+    # only supports Postgres, so this branch is the only one
+    # exercised in CI; the explicit drop here documents that
+    # constraint for any future port.
     sa.Enum(name=_SEVERITY_ENUM_NAME).drop(op.get_bind(), checkfirst=True)

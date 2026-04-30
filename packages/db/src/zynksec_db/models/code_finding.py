@@ -18,9 +18,13 @@ JSON output; the plugin strips it before constructing the row.
 What we store is enough to triage and dedup without ever turning
 the database into a credential dump:
 
-  * ``redacted_preview`` — first-4 + last-4 chars of the secret,
-    middle masked with ``*`` (e.g. ``AKIA****XXXX``).  Operators
-    can recognise their own keys without us holding the keys.
+  * ``redacted_preview`` — first-4 + ``****`` (literal four
+    asterisks, NOT one per masked char) + last-4 of the secret
+    (e.g. ``AKIA****TKEY``).  Output is always 12 chars
+    regardless of input length, so the preview can't grow with
+    a longer secret and the masked-portion length isn't itself
+    a side-channel.  Operators can recognise their own keys
+    without us holding the keys.
   * ``secret_hash`` — SHA-256 of the raw secret value.  Same secret
     found in two scans collides on the hash, so dedup is exact.
     Hash is one-way; recovering the secret from the hash is no
