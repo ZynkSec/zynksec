@@ -1,0 +1,9 @@
+{
+  "name": "zynksec-osv-fixture",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Phase 3 Sprint 3 OSV-Scanner integration fixture. Pins lodash@4.17.20 because it carries multiple known advisories (CVE-2021-23337 / GHSA-35jh-r3h4-6jhm command injection in zipObjectDeep + GHSA-29mw-wpgm-hmr9 ReDoS in template). The scan results assert at least one critical / high finding lands in code_findings.",
+  "dependencies": {
+    "lodash": "4.17.20"
+  }
+}
