@@ -53,6 +53,7 @@ from zynksec_scanners.types import TargetKind
 SCANNER_ZAP: str = "zap"
 SCANNER_GITLEAKS: str = "gitleaks"
 SCANNER_SEMGREP: str = "semgrep"
+SCANNER_OSV: str = "osv-scanner"
 
 
 class UnknownScanner(KeyError):  # noqa: N818 — matches existing KeyError-shape convention
@@ -99,6 +100,15 @@ _REGISTRY: dict[str, _ScannerEntry] = {
         supported_kinds=frozenset({"repo"}),
         # Phase 3 Sprint 2: opt-in only.  Defaults stay with
         # gitleaks so the existing kind=repo flow is unchanged.
+        default_for_kinds=frozenset(),
+    ),
+    SCANNER_OSV: _ScannerEntry(
+        name=SCANNER_OSV,
+        supported_kinds=frozenset({"repo"}),
+        # Phase 3 Sprint 3: opt-in only.  Defaults stay with
+        # gitleaks (preserves the kind=repo backward-compat
+        # contract from Sprint 1).  Opt in via explicit
+        # ``scanner="osv-scanner"`` to scan a repo's lockfiles.
         default_for_kinds=frozenset(),
     ),
 }
