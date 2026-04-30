@@ -239,9 +239,13 @@ services:
   #
   # Networks: zynksec-core (Postgres + Redis) + zynksec-scan.  NOT on
   # zynksec-targets — the cloner egresses to public Git hosts, not
-  # to the lab.  No host-port publish.  Memory ceiling: 768 MiB
-  # (two prefork children + Celery master + import graph land
-  # around 600 MiB in practice; 768 MiB leaves headroom).
+  # to the lab.  No host-port publish.  Memory ceiling: 1024 MiB
+  # (Phase 3 Sprint 2 bump from 768 MiB).  Semgrep's working set
+  # adds ~150-300 MiB on top of the gitleaks-only baseline (rule
+  # parsing + AST representation of the cloned repo); 1024 MiB
+  # leaves headroom for two concurrent scans without OOM-killing
+  # the container on a moderately-sized repo.  Bump again in
+  # Sprint 4+ (trivy / OSV) if the workload outgrows this.
   code-worker:
     build:
       context: .
@@ -261,8 +265,8 @@ services:
     networks:
       - zynksec-core
       - zynksec-scan
-    mem_limit: 768m
-    memswap_limit: 768m
+    mem_limit: 1024m
+    memswap_limit: 1024m
     command:
       - celery
       - -A

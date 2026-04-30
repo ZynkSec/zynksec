@@ -6,11 +6,12 @@
 # Celery entry-point — but additionally installs:
 #   * ``git`` (the cloner shells out to it)
 #   * ``gitleaks`` (Phase 3 Sprint 1's repo scanner)
+#   * ``semgrep`` (Phase 3 Sprint 2's SAST scanner)
 #
-# The split is deliberate.  ZAP workers don't need git or gitleaks;
-# baking them into the ZAP worker image would bloat it and tie the
-# two scanner families' release cadences together.  The compose
-# service ``code-worker`` is built from this file and joins
+# The split is deliberate.  ZAP workers don't need git, gitleaks,
+# or semgrep; baking them into the ZAP worker image would bloat it
+# and tie the scanner families' release cadences together.  The
+# compose service ``code-worker`` is built from this file and joins
 # zynksec-core + zynksec-scan only — code workers never reach the
 # zynksec-targets network.
 #
@@ -40,6 +41,29 @@ ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.11@sha256:3b7b60a81d3c57ef471703e5c83fd4aaa3
 ARG GITLEAKS_VERSION=8.18.4
 ARG GITLEAKS_SHA256_AMD64=ba6dbb656933921c775ee5a2d1c13a91046e7952e9d919f9bac4cec61d628e7d
 ARG GITLEAKS_SHA256_ARM64=bf5f7f466ebfade1296c8bd32cf7d3f592c2aa78836aa9980ffbe2cadca7a861
+
+# ---------- Semgrep pin ----------
+# Phase 3 Sprint 2.  Semgrep ships as a Python package on PyPI
+# rather than a release-tarball binary, so the integrity story is
+# different from gitleaks: we rely on
+#   1. The exact-version pin (``semgrep==<X>``) so PyPI's resolver
+#      can't drift to a newer release silently.
+#   2. ``pip install`` over HTTPS to PyPI — TLS verifies PyPI's
+#      cert via the system CA bundle (``ca-certificates`` apt
+#      package) so a network-MITM attacker can't substitute the
+#      wheel without a valid PyPI cert.
+#   3. PyPI's own server-side integrity (PEP 503 metadata + the
+#      wheel SHA-256 PyPI publishes alongside each release).
+#
+# This is weaker than the gitleaks ``sha256sum -c`` chain (which
+# verifies the tarball against a hash we ship in the source tree)
+# — a future hardening pass could pin the wheel SHA via
+# ``pip install --require-hashes`` with a Sprint-2-owned
+# ``semgrep-requirements.txt``.  Acceptable for now: the
+# attack-surface delta is "PyPI account compromise" vs. "gitleaks
+# release tag compromise", both of which our broader supply-chain
+# strategy treats as upstream-trust failures.
+ARG SEMGREP_VERSION=1.161.0
 
 # ---------- Builder ----------
 FROM ${UV_IMAGE} AS uv-stage
@@ -92,6 +116,21 @@ RUN apt-get update -qq \
  && install -m 0755 /tmp/gitleaks /usr/local/bin/gitleaks \
  && /usr/local/bin/gitleaks version
 
+# ---------- Semgrep fetcher ----------
+# Semgrep installs as a Python package; the simplest reproducible
+# build pattern is a dedicated venv at ``/opt/semgrep`` (no
+# collision with the worker's ``/app/.venv``).  The runtime stage
+# copies the whole venv and symlinks the entry-point — Semgrep's
+# own dependency tree (~50 MB) ends up isolated.
+FROM ${PYTHON_IMAGE} AS semgrep-stage
+ARG SEMGREP_VERSION
+RUN apt-get update -qq \
+ && apt-get install -y --no-install-recommends ca-certificates \
+ && rm -rf /var/lib/apt/lists/* \
+ && python3 -m venv /opt/semgrep \
+ && /opt/semgrep/bin/pip install --no-cache-dir "semgrep==${SEMGREP_VERSION}" \
+ && /opt/semgrep/bin/semgrep --version
+
 # ---------- Runtime ----------
 FROM ${PYTHON_IMAGE} AS runtime
 
@@ -104,15 +143,36 @@ RUN groupadd --system --gid ${APP_GID} zynksec \
 # git is required by the cloner.  ca-certificates is required for
 # https clones to verify their TLS chain (CLAUDE.md §6 — TLS
 # verification is never disabled).  --no-install-recommends keeps the
-# image lean (~140 MB total instead of ~280 MB with recommended deps).
+# image lean.  Sprint 2 keeps the runtime image's apt surface
+# unchanged from Sprint 1 — Semgrep is delivered as a venv
+# (``/opt/semgrep``) copied from the semgrep-stage; no extra apt
+# packages needed in runtime.
 RUN apt-get update -qq \
  && apt-get install -y --no-install-recommends git ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=gitleaks-stage /usr/local/bin/gitleaks /usr/local/bin/gitleaks
 
+# Copy the Semgrep venv as a self-contained tree, then symlink the
+# entry-point into ``/usr/local/bin/`` so plugins can call
+# ``semgrep`` without knowing the venv layout.  The venv carries
+# its own Python interpreter (~5 MB) AND Semgrep's deps (~45 MB);
+# total Sprint-2 image growth is roughly 50 MB.
+COPY --from=semgrep-stage /opt/semgrep /opt/semgrep
+RUN ln -s /opt/semgrep/bin/semgrep /usr/local/bin/semgrep
+
 WORKDIR /app
 COPY --from=builder --chown=zynksec:zynksec /app /app
+
+# ``COPY --chown`` sets ownership on COPIED files but NOT on the
+# pre-existing ``/app`` directory itself (created by ``WORKDIR``
+# under root).  Sprint 2 needs ``/app`` writable by ``zynksec``
+# because Semgrep writes a per-process log directory at
+# ``$HOME/.semgrep`` (and ``zynksec``'s home is ``/app`` per the
+# useradd above).  Without this chown, semgrep crashes at startup
+# with ``PermissionError: [Errno 13] Permission denied:
+# '/app/.semgrep'``.
+RUN chown zynksec:zynksec /app
 
 ENV PATH="/app/.venv/bin:${PATH}" \
     PYTHONUNBUFFERED=1 \
