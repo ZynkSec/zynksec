@@ -220,12 +220,25 @@ def _scan_root(scan_id: str) -> Path:
     """Per-scan temp directory under ``/tmp/zynksec-scans/<scan_id>``.
 
     Single root for every scan — cleanup, monitoring, and incident
-    response can target one prefix.  The directory is created with
-    ``0o700`` so other users on a shared host can't peek at clone
-    contents while the scan runs.
+    response can target one prefix.  Both the per-scan dir AND its
+    ``zynksec-scans/`` parent are forced to ``0o700``: ``mkdir(mode=...)``
+    only applies the mode to the LAST directory it creates, so the
+    parent would otherwise inherit the system umask (typically 0755 →
+    world-readable).  On a multi-process container, a 0755 parent
+    lets any other UID list the in-flight scan UUIDs (metadata leak,
+    even though the per-scan contents stay protected by the leaf
+    0o700).  Forcing the parent on every call closes that gap.
+
+    Idempotent: ``Path.chmod`` on an already-0o700 directory is a
+    no-op.  Cheap enough to run on every clone rather than once at
+    startup — keeps the security invariant local to the function
+    that needs it, no module-import side effects.
     """
-    root = Path(tempfile.gettempdir()) / "zynksec-scans" / scan_id
-    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    parent = Path(tempfile.gettempdir()) / "zynksec-scans"
+    parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    parent.chmod(0o700)
+    root = parent / scan_id
+    root.mkdir(exist_ok=True, mode=0o700)
     return root
 
 
