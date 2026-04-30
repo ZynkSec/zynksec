@@ -55,6 +55,14 @@ class ScanCreate(BaseModel):
     target_url: HttpUrl | None = None
     project_id: uuid.UUID | None = None
     scan_profile: ScanProfile = ScanProfile.PASSIVE
+    # Phase 3 Sprint 2: optional scanner override.  ``None`` =
+    # per-kind default (gitleaks for repo, ZAP for web_app/api).
+    # An explicit value is validated against
+    # :func:`zynksec_scanners.resolve_scanner` at the router; an
+    # unsupported pairing surfaces as a canonical-envelope 422
+    # ``unknown_scanner`` with ``details.available`` listing
+    # the valid scanner names for the Target's kind.
+    scanner: str | None = None
 
 
 class ScanRead(BaseModel):
@@ -94,6 +102,12 @@ class ScanRead(BaseModel):
     # rows that pre-date the column.
     failure_reason: str | None = None
     created_at: datetime
+    # Phase 3 Sprint 2: which scanner produced this scan's findings.
+    # Resolved + persisted at write-time (see ``ScanCreate.scanner``);
+    # ``None`` for pre-Sprint-2 rows that don't have the column
+    # populated.  Clients can use this to filter / group findings
+    # by scanner family in a UI.
+    scanner: str | None = None
     findings: list[FindingRead] = Field(default_factory=list)
     # Phase 3 Sprint 1: repo-scanner findings (gitleaks; Phase 3
     # Sprint 2+: semgrep / trivy / OSV / syft / grype) live in a

@@ -124,6 +124,18 @@ class Scan(Base):
         nullable=True,
         default=None,
     )
+    # Phase 3 Sprint 2: which scanner ran this scan.  Nullable for
+    # backward compat — every pre-Sprint-2 row is null, plus future
+    # POSTs that omit ``scanner`` resolve to the per-kind default at
+    # dispatch time and persist that resolved name back here.  Free-
+    # form short string (not an ENUM) so adding scanners
+    # (semgrep, trivy, OSV, syft, grype) doesn't need an ``ALTER TYPE``.
+    # The canonical value-set lives in :mod:`zynksec_scanners.registry`.
+    scanner: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+        default=None,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

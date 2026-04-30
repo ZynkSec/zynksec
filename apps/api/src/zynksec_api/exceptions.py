@@ -148,3 +148,17 @@ class DuplicateTargetIds(ZynksecError):  # noqa: N818 — HTTPException-style
 
     code = "duplicate_target_ids"
     http_status = status.HTTP_422_UNPROCESSABLE_ENTITY
+
+
+class UnknownScanner(ZynksecError):  # noqa: N818 — HTTPException-style
+    """422 — POST /scans with a ``scanner`` field that doesn't resolve.
+
+    Phase 3 Sprint 2.  The router validates against
+    :func:`zynksec_scanners.resolve_scanner` and surfaces a mismatch
+    as a canonical 422.  ``details.available`` lists the scanner
+    names that DO support the resolved Target's kind, so the
+    caller can pick a valid one without grepping docs.
+    """
+
+    code = "unknown_scanner"
+    http_status = status.HTTP_422_UNPROCESSABLE_ENTITY

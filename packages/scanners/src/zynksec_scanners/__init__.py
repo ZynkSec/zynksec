@@ -15,8 +15,13 @@ ORM resource in :mod:`zynksec_db`).  Out-of-tree plugins must import
 from zynksec_scanners.base import ScannerPlugin
 from zynksec_scanners.registry import (
     SCANNER_GITLEAKS,
+    SCANNER_SEMGREP,
     SCANNER_ZAP,
+    UnknownScanner,
+    default_scanner_for,
+    resolve_scanner,
     scanner_for_kind,
+    scanners_for_kind,
 )
 from zynksec_scanners.types import (
     HealthStatus,
@@ -33,12 +38,17 @@ __all__ = [
     "HealthStatus",
     "RawScanResult",
     "SCANNER_GITLEAKS",
+    "SCANNER_SEMGREP",
     "SCANNER_ZAP",
     "ScanContext",
     "ScanProfile",
     "ScanTarget",
     "ScannerPlugin",
     "TargetKind",
+    "UnknownScanner",
     "__version__",
+    "default_scanner_for",
+    "resolve_scanner",
     "scanner_for_kind",
+    "scanners_for_kind",
 ]

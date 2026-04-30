@@ -38,16 +38,18 @@ from zynksec_db import (
 from zynksec_db import Finding as FindingRow
 from zynksec_scanners import (
     SCANNER_GITLEAKS,
+    SCANNER_SEMGREP,
     ScannerPlugin,
     ScanTarget,
-    scanner_for_kind,
+    default_scanner_for,
 )
 from zynksec_scanners.gitleaks.plugin import code_findings_from_gitleaks
+from zynksec_scanners.semgrep.plugin import code_findings_from_semgrep
 from zynksec_scanners.types import TargetKind
 from zynksec_schema import Finding, ScanProfile, code_queue, zap_queue_for_index
 
 from zynksec_worker.config import get_settings
-from zynksec_worker.runners import build_plugin_for
+from zynksec_worker.runners import build_plugin_by_name
 
 _log = structlog.get_logger(__name__)
 
@@ -68,7 +70,7 @@ def _load_target_and_group_id(
     factory: sessionmaker[Session],
     scan_uuid: uuid.UUID,
     scan_profile: ScanProfile,
-) -> tuple[ScanTarget, uuid.UUID | None]:
+) -> tuple[ScanTarget, uuid.UUID | None, str | None]:
     """Load the Scan row and construct a :class:`ScanTarget` for the plugin.
 
     When the Scan links to a persistent :class:`zynksec_db.Target`
@@ -78,9 +80,15 @@ def _load_target_and_group_id(
     (``scan.target_id IS NULL``) keep the historical ``"web_app"``
     default — that path has no kind information to thread through.
 
-    Also returns the parent ``scan_group_id`` (or ``None`` for legacy
-    single-scan POSTs) so the caller can drive group-rollup hooks
-    without re-querying the Scan row.
+    Returns:
+      * :class:`ScanTarget` parameter bundle.
+      * Parent ``scan_group_id`` (or ``None`` for legacy single-
+        scan POSTs) so the caller can drive group-rollup hooks
+        without re-querying the Scan row.
+      * Phase 3 Sprint 2: persisted ``scan.scanner`` value (or
+        ``None`` for pre-Sprint-2 rows + future POSTs that omit
+        the scanner field — both cases resolve to the per-kind
+        default at dispatch time).
     """
     with factory() as session:
         scan = session.get(Scan, scan_uuid)
@@ -95,7 +103,7 @@ def _load_target_and_group_id(
             scan_id=scan.id,
             scan_profile=scan_profile,
         )
-        return target, scan.scan_group_id
+        return target, scan.scan_group_id, scan.scanner
 
 
 def _finding_to_row(finding: Finding) -> FindingRow:
@@ -251,7 +259,9 @@ def execute_scan(scan_uuid: uuid.UUID, profile: ScanProfile) -> bool:
     try:
         _log.info("scan.run.start", scan_id=scan_id_str, scan_profile=profile.value)
 
-        target, scan_group_uuid = _load_target_and_group_id(factory, scan_uuid, profile)
+        target, scan_group_uuid, persisted_scanner = _load_target_and_group_id(
+            factory, scan_uuid, profile
+        )
         if scan_group_uuid is not None:
             structlog.contextvars.bind_contextvars(scan_group_id=str(scan_group_uuid))
             bound_group_id = True
@@ -265,28 +275,27 @@ def execute_scan(scan_uuid: uuid.UUID, profile: ScanProfile) -> bool:
 
         _mark(factory, "running", scan_uuid)
 
-        # Phase 3 Sprint 1: pick the right plugin for the Target's
-        # kind via the canonical registry (zynksec_scanners.registry).
-        # ZAP for web_app / api; gitleaks for repo.  A worker that
-        # receives a task it can't service (e.g. code-worker getting
-        # a web_app scan via a misconfigured queue) will surface the
-        # mismatch via :meth:`plugin.supports` returning False below
-        # — we fail loudly rather than silently route.
-        plugin: ScannerPlugin = build_plugin_for(target.kind, settings)
-        scanner_family = scanner_for_kind(target.kind)
-        # Phase 3 cleanup item #10: emit a structured log line so
-        # an integration test (and any future ops dashboard) can
-        # verify that the plugin the worker actually selected
-        # matches the kind that determined ``Scan.assigned_queue``
-        # at API write-time.  No PATCH endpoint on Target today,
-        # so the API and worker can't disagree, but the log line
-        # locks the contract so a future PATCH that mutates
-        # ``Target.kind`` mid-flight is detectable from logs.
+        # Phase 3 Sprint 2: resolve the scanner name.  The API
+        # persists ``scan.scanner`` after validating the explicit
+        # ``ScanCreate.scanner`` field (or NULL when omitted) — we
+        # honour that here.  Pre-Sprint-2 rows + future POSTs that
+        # leave ``scan.scanner`` NULL fall back to the per-kind
+        # default (gitleaks for repo, ZAP for web_app/api).
+        scanner_family = persisted_scanner or default_scanner_for(target.kind)
+        plugin: ScannerPlugin = build_plugin_by_name(scanner_family, settings)
+        # Phase 3 Sprint 1 cleanup item #10: emit a structured log
+        # line so an integration test (and any future ops dashboard)
+        # can verify that the plugin the worker actually selected
+        # matches the scanner that determined ``Scan.assigned_queue``
+        # at API write-time.  Sprint 2 added the explicit
+        # ``scanner`` field; the resolved name persisted on
+        # ``scan.scanner`` should match what the worker picks here.
         _log.info(
             "scan.run.plugin_selected",
             scan_id=scan_id_str,
             kind=target.kind,
             scanner_family=scanner_family,
+            persisted_scanner=persisted_scanner,
             plugin_id=plugin.id,
         )
 
@@ -342,6 +351,21 @@ def execute_scan(scan_uuid: uuid.UUID, profile: ScanProfile) -> bool:
                             rows = [
                                 CodeFindingRow(**kwargs)
                                 for kwargs in code_findings_from_gitleaks(
+                                    findings,
+                                    scan_id=scan_uuid,
+                                )
+                            ]
+                            _code_finding_repo.add_many(session, rows)
+                        elif scanner_family == SCANNER_SEMGREP:
+                            # Phase 3 Sprint 2: Semgrep emits
+                            # engine-native ``SemgrepFinding`` objects;
+                            # ``code_findings_from_semgrep`` maps to
+                            # ``CodeFinding`` rows with
+                            # ``secret_hash`` / ``secret_kind`` left
+                            # NULL (SAST patterns aren't secrets).
+                            rows = [
+                                CodeFindingRow(**kwargs)
+                                for kwargs in code_findings_from_semgrep(
                                     findings,
                                     scan_id=scan_uuid,
                                 )

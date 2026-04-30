@@ -20,6 +20,15 @@
 # keeps the source clean of pattern-matched strings while the image
 # build assembles them locally.  None of the values below are real
 # credentials; the entropy substring is literally "TEST" / "EXAMPLE".
+#
+# Phase 3 Sprint 2 adds Semgrep plants: short Python files in
+# ``tests/fixtures/semgrep-plants/`` (eval, shell=True, pickle.loads
+# patterns) committed as plain source.  Unlike the gitleaks plants,
+# Semgrep patterns aren't secret-shaped so GitHub secret scanning
+# / gitleaks both ignore them — no fragment-construction needed.
+# The runtime stage ``COPY``s the whole directory into the bare
+# repo so a single ``git clone`` carries both gitleaks plants AND
+# Semgrep plants in one tree.
 
 # Base image pinned by digest (Phase 3 cleanup item #2).  Tag stays
 # in the comment for legibility but ``@sha256:`` is the load-bearing
@@ -87,6 +96,14 @@ accidentally fetch only files matching ``*secret*``.
 print("hello from the vulnerable-repo fixture")
 PY
 
+# Phase 3 Sprint 2: copy the Semgrep plant files into the working
+# tree alongside the gitleaks plants.  The integration tests
+# (``test_semgrep_scan.py``) assert that gitleaks scans see only
+# the gitleaks plants (3 secrets) and Semgrep scans see only the
+# Semgrep plants (3 SAST findings) — both sets live in the same
+# bare repo, the scanner family is what differentiates.
+COPY tests/fixtures/semgrep-plants/ /tmp/src/semgrep-plants/
+
 # Initialise + commit the working tree, then turn it into a bare
 # repo.  Synthetic ``zynksec-fixture`` author identity makes it
 # obvious the commits are not from a real maintainer.
@@ -95,7 +112,7 @@ RUN git -c init.defaultBranch=main init -q . \
  && git config user.name "zynksec-fixture" \
  && git config commit.gpgsign false \
  && git add . \
- && git commit -q -m "phase 3 sprint 1 vulnerable-repo fixture" \
+ && git commit -q -m "phase 3 sprint 2 vulnerable-repo fixture" \
  && git clone -q --bare /tmp/src /srv/vulnerable-repo.git
 
 # Runtime: debian:bookworm-slim with python3 + git (for
