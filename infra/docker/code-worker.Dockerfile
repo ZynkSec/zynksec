@@ -7,6 +7,7 @@
 #   * ``git`` (the cloner shells out to it)
 #   * ``gitleaks`` (Phase 3 Sprint 1's repo scanner)
 #   * ``semgrep`` (Phase 3 Sprint 2's SAST scanner)
+#   * ``osv-scanner`` (Phase 3 Sprint 3's dependency scanner)
 #
 # The split is deliberate.  ZAP workers don't need git, gitleaks,
 # or semgrep; baking them into the ZAP worker image would bloat it
@@ -41,6 +42,20 @@ ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.11@sha256:3b7b60a81d3c57ef471703e5c83fd4aaa3
 ARG GITLEAKS_VERSION=8.18.4
 ARG GITLEAKS_SHA256_AMD64=ba6dbb656933921c775ee5a2d1c13a91046e7952e9d919f9bac4cec61d628e7d
 ARG GITLEAKS_SHA256_ARM64=bf5f7f466ebfade1296c8bd32cf7d3f592c2aa78836aa9980ffbe2cadca7a861
+
+# ---------- OSV-Scanner pin ----------
+# Phase 3 Sprint 3.  osv-scanner is a Go binary distributed as a
+# direct executable (no tarball wrapper) on GitHub releases —
+# similar to gitleaks but the asset is the bare binary, so the
+# ``tar -xzf`` step is skipped.  SHA-256s below are read verbatim
+# from the upstream ``osv-scanner_SHA256SUMS`` file shipped with
+# the release.  Bumping the pin = one-line edit (version) + a
+# manual fetch of the new checksums; CI rerun against the
+# gitfixture lockfile (with its known lodash@4.17.20 vulns)
+# verifies the binary still detects them.
+ARG OSV_SCANNER_VERSION=2.3.5
+ARG OSV_SCANNER_SHA256_AMD64=bb30c580afe5e757d3e959f4afd08a4795ea505ef84c46962b9a738aa573b41b
+ARG OSV_SCANNER_SHA256_ARM64=fa46ad2b3954db5d5335303d45de921613393285d9a93c140b63b40e35e9ce50
 
 # ---------- Semgrep pin ----------
 # Phase 3 Sprint 2.  Semgrep ships as a Python package on PyPI
@@ -131,6 +146,31 @@ RUN apt-get update -qq \
  && /opt/semgrep/bin/pip install --no-cache-dir "semgrep==${SEMGREP_VERSION}" \
  && /opt/semgrep/bin/semgrep --version
 
+# ---------- OSV-Scanner fetcher ----------
+# Phase 3 Sprint 3.  osv-scanner ships as a bare Go binary on
+# GitHub releases (no tarball wrapper), so the pattern is gitleaks
+# minus the ``tar -xzf`` step.  ``curl -fsSL`` per CLAUDE.md §14;
+# ``sha256sum -c`` against the upstream-published checksum is the
+# integrity gate.
+FROM ${PYTHON_IMAGE} AS osv-scanner-stage
+ARG OSV_SCANNER_VERSION
+ARG OSV_SCANNER_SHA256_AMD64
+ARG OSV_SCANNER_SHA256_ARM64
+RUN apt-get update -qq \
+ && apt-get install -y --no-install-recommends curl ca-certificates \
+ && rm -rf /var/lib/apt/lists/* \
+ && ARCH="$(dpkg --print-architecture)" \
+ && case "$ARCH" in \
+      amd64) OSV_ARCH=linux_amd64; EXPECTED_SHA="${OSV_SCANNER_SHA256_AMD64}" ;; \
+      arm64) OSV_ARCH=linux_arm64; EXPECTED_SHA="${OSV_SCANNER_SHA256_ARM64}" ;; \
+      *) echo "unsupported arch: $ARCH" >&2; exit 1 ;; \
+    esac \
+ && curl -fsSLo /tmp/osv-scanner \
+    "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_${OSV_ARCH}" \
+ && echo "${EXPECTED_SHA}  /tmp/osv-scanner" | sha256sum -c - \
+ && install -m 0755 /tmp/osv-scanner /usr/local/bin/osv-scanner \
+ && /usr/local/bin/osv-scanner --version
+
 # ---------- Runtime ----------
 FROM ${PYTHON_IMAGE} AS runtime
 
@@ -152,6 +192,7 @@ RUN apt-get update -qq \
  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=gitleaks-stage /usr/local/bin/gitleaks /usr/local/bin/gitleaks
+COPY --from=osv-scanner-stage /usr/local/bin/osv-scanner /usr/local/bin/osv-scanner
 
 # Copy the Semgrep venv as a self-contained tree, then symlink the
 # entry-point into ``/usr/local/bin/`` so plugins can call
