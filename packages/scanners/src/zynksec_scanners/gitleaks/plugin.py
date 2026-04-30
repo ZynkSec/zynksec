@@ -285,6 +285,12 @@ class GitleaksPlugin(ScannerPlugin):
                 timeout=self._SCAN_TIMEOUT_S,
                 capture_output=True,
                 text=True,
+                # gitleaks doesn't read stdin in normal operation,
+                # but ``GIT_TERMINAL_PROMPT=0`` doesn't apply here
+                # (gitleaks isn't git).  Close stdin defensively so
+                # nothing from the parent process can feed it.
+                # Phase 3 cleanup item #3.
+                stdin=subprocess.DEVNULL,
             )
         except subprocess.TimeoutExpired as exc:
             raise RuntimeError(f"gitleaks scan timed out after {self._SCAN_TIMEOUT_S}s") from exc
@@ -411,6 +417,9 @@ class GitleaksPlugin(ScannerPlugin):
                 timeout=10,
                 capture_output=True,
                 text=True,
+                # Same rationale as the ``run`` site above —
+                # defence in depth (Phase 3 cleanup item #3).
+                stdin=subprocess.DEVNULL,
             )
         except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
             return HealthStatus(ok=False, message=f"gitleaks unavailable: {exc}")

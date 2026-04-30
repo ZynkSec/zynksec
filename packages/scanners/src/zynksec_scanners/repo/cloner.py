@@ -309,6 +309,15 @@ def clone_shallow(
             timeout=timeout_s,
             capture_output=True,
             text=True,
+            # ``git clone`` doesn't read stdin in normal operation,
+            # but git has had historical bugs where credential
+            # helpers prompt on stdin in non-interactive contexts
+            # (``GIT_TERMINAL_PROMPT=0`` covers most of those).
+            # Closing stdin defensively is cheap insurance against
+            # any controlled stream from the parent process feeding
+            # credentials into git's auth prompt.  Phase 3 cleanup
+            # item #3.
+            stdin=subprocess.DEVNULL,
             env={
                 # Keep git from prompting for credentials — any
                 # auth-required clone in Sprint 1 is a misconfig,
