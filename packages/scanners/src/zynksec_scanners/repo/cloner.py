@@ -75,6 +75,62 @@ _FORBIDDEN_URL_CODEPOINTS: frozenset[str] = frozenset(chr(c) for c in range(0x00
 _MAX_URL_LENGTH: int = 2048
 _DEFAULT_CLONE_TIMEOUT_S: int = 60
 
+#: Prefixes whose env vars are inherited from the worker process
+#: into the ``git clone`` subprocess.  Phase 3 cleanup item #4: the
+#: pre-cleanup cloner replaced the env outright, dropping
+#: operator-supplied proxy + CA-bundle config.  Forwarding ONLY this
+#: allow-list keeps the surface small (no LD_PRELOAD, no PYTHONPATH,
+#: no unrelated parent-process state) while admitting the env vars
+#: an operator legitimately needs:
+#:
+#:   * ``GIT_*``   — every git config override (e.g.
+#:                   ``GIT_SSL_CAINFO`` for private CAs,
+#:                   ``GIT_CURL_VERBOSE`` for debugging).
+#:   * ``HTTPS_*`` / ``HTTP_*`` / ``NO_*`` — corporate proxy
+#:                   configuration (``HTTPS_PROXY=http://proxy:8080``,
+#:                   ``NO_PROXY=internal.example.com``).
+#:   * ``SSL_*``   — ``SSL_CERT_FILE`` / ``SSL_CERT_DIR`` for
+#:                   custom CA bundles needed by libcurl.
+_INHERITED_ENV_PREFIXES: tuple[str, ...] = (
+    "GIT_",
+    "HTTPS_",
+    "HTTP_",
+    "NO_",
+    "SSL_",
+)
+
+
+def _build_clone_env() -> dict[str, str]:
+    """Build the env dict for the ``git clone`` subprocess.
+
+    Forwards the :data:`_INHERITED_ENV_PREFIXES` allow-list from
+    the worker's environment, then layers explicit overrides on top
+    (``GIT_TERMINAL_PROMPT``, ``PATH``, ``HOME``).  The result is the
+    smallest env that lets a clone (a) inherit operator config
+    (proxies, custom CAs) and (b) carry the explicit zynksec
+    overrides (no terminal prompt, deterministic ``HOME``).
+    """
+    inherited = {
+        k: v for k, v in os.environ.items() if any(k.startswith(p) for p in _INHERITED_ENV_PREFIXES)
+    }
+    overrides = {
+        # Keep git from prompting for credentials — any
+        # auth-required clone in Sprint 1 is a misconfig, not
+        # something to wait on a TTY for.  ``terminal.prompt``
+        # silences the credential helper too.  Overrides any
+        # inherited ``GIT_TERMINAL_PROMPT`` so an operator can't
+        # accidentally re-enable prompts.
+        "GIT_TERMINAL_PROMPT": "0",
+        "PATH": os.environ.get("PATH", ""),
+        # ``HOME`` defaults to ``tempfile.gettempdir()`` rather
+        # than the bare ``/tmp`` literal — same effective path
+        # on POSIX, but keeps Bandit's S108 "/tmp insecure"
+        # check from firing on what is actually a deliberate
+        # use of the system temp dir.
+        "HOME": os.environ.get("HOME", tempfile.gettempdir()),
+    }
+    return {**inherited, **overrides}
+
 
 class CloneError(RuntimeError):
     """Raised when a clone is rejected by the allow-list or fails on disk."""
@@ -318,20 +374,11 @@ def clone_shallow(
             # credentials into git's auth prompt.  Phase 3 cleanup
             # item #3.
             stdin=subprocess.DEVNULL,
-            env={
-                # Keep git from prompting for credentials — any
-                # auth-required clone in Sprint 1 is a misconfig,
-                # not something to wait on a TTY for.  ``terminal.prompt``
-                # silences the credential helper too.
-                "GIT_TERMINAL_PROMPT": "0",
-                "PATH": os.environ.get("PATH", ""),
-                # ``HOME`` defaults to ``tempfile.gettempdir()`` rather
-                # than the bare ``/tmp`` literal — same effective path
-                # on POSIX, but keeps Bandit's S108 "/tmp insecure"
-                # check from firing on what is actually a deliberate
-                # use of the system temp dir.
-                "HOME": os.environ.get("HOME", tempfile.gettempdir()),
-            },
+            # Env built from the inherited allow-list +
+            # explicit overrides — see ``_build_clone_env``.
+            # Pre-cleanup, this was a hardcoded 3-key dict that
+            # dropped operator proxy / CA-bundle config.
+            env=_build_clone_env(),
         )
     except subprocess.TimeoutExpired as exc:
         shutil.rmtree(root, ignore_errors=True)
