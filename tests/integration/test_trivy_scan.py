@@ -9,11 +9,12 @@ sprints).  No mocks.
 OFFLINE BY DESIGN.  ``--skip-policy-update --skip-db-update
 --offline-scan`` flags ensure the scanner makes NO outbound
 network calls at scan time.  This is asserted at the unit-test
-level via ``test_offline_flags_present_in_argv`` (the cheap
-introspection check) AND end-to-end here by running the scan
-in the integration stack and confirming it completes
-successfully — Trivy would block on the policy-update HTTP call
-otherwise.
+level (``tests/unit/test_trivy_classify.py::
+test_offline_flags_present_in_argv``) AND end-to-end here by
+running the scan in the integration stack — Trivy would block
+on a policy-update HTTP call otherwise, so a successful scan
+in this stack proves the offline path works through the real
+worker subprocess wiring.
 
 Coverage:
   * ``test_trivy_scan_finds_iac_misconfigurations`` — POST a
@@ -30,12 +31,6 @@ Coverage:
     has no StartLine to point at.  Assert the persisted row's
     ``line_number`` is NULL — exercising migration 0009's
     nullable column end-to-end through the Trivy path.
-  * ``test_trivy_scan_offline_subprocess_args`` — instantiate
-    the plugin directly and assert ``build_argv`` contains the
-    three OFFLINE_FLAGS plus ``--scanners misconfig``.  Cheaper
-    than spinning up a network-isolated container; complements
-    the unit test by verifying the worker's actual plugin
-    instance carries the same flags.
   * ``test_unknown_scanner_lists_all_four`` — POST with
     ``scanner="bogus"``; assert 422 ``unknown_scanner`` with
     ``details.available`` containing all four scanner names.
@@ -43,6 +38,12 @@ Coverage:
 The Sprint 1/2/3 default-still-gitleaks contract is already
 covered by ``test_repo_scan_default_scanner_is_gitleaks`` in
 ``test_semgrep_scan.py`` — no point duplicating it here.
+
+Imports are deliberately limited to ``zynksec_db`` (the only
+worker-side package the host pytest venv has installed); the
+``zynksec_scanners`` family runs inside the code-worker
+container, not on the test runner — so the OFFLINE_FLAGS
+invariant is validated at the unit level only.
 """
 
 from __future__ import annotations
@@ -54,7 +55,6 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from zynksec_db import CodeFinding
-from zynksec_scanners.trivy.plugin import TrivyPlugin
 
 _TERMINAL_POLL_INTERVAL_S = 1.0
 # Trivy misconfig scans are CPU-bound on the policy engine; no
@@ -237,31 +237,6 @@ def test_trivy_scan_persists_null_line_for_no_healthcheck(
             r.line_number is None
         ), f"{_PLANT_NO_HEALTHCHECK} should persist line_number=None; got {r.line_number!r}"
         assert r.file_path == _PLANTED_DOCKERFILE, r
-
-
-def test_trivy_scan_offline_subprocess_args() -> None:
-    """The plugin's constructed argv carries the three OFFLINE_FLAGS
-    plus ``--scanners misconfig``.
-
-    Cheaper than spinning up a network-isolated container; this
-    asserts at the integration boundary (a fresh ``TrivyPlugin``
-    instance built the same way the worker builds one) that the
-    flags are still present.  Combined with the unit-level
-    invariant in ``test_trivy_classify.py``, this catches both
-    plugin-level and runtime-level drift.
-    """
-    plugin = TrivyPlugin()
-    argv = plugin.build_argv("/srv/repo")  # noqa: S108 — synthetic argv probe, no FS access
-    assert "--scanners" in argv
-    assert argv[argv.index("--scanners") + 1] == "misconfig"
-    for flag in TrivyPlugin.OFFLINE_FLAGS:
-        assert flag in argv, f"offline flag {flag!r} missing from worker argv"
-    # Defence in depth: vuln + secret scanners must NOT appear —
-    # those overlap with OSV-Scanner / Gitleaks and would
-    # silently broaden scope if a regression accidentally
-    # appended them.
-    assert "vuln" not in argv, argv
-    assert "secret" not in argv, argv
 
 
 def test_unknown_scanner_lists_all_four(api_client: httpx.Client) -> None:
