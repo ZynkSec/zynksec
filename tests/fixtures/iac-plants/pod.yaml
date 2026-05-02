@@ -1,0 +1,17 @@
+# Phase 3 Sprint 4 IaC misconfiguration plant — Trivy fixture.
+# Deliberately bad on purpose; trivy fs --scanners misconfig
+# fires KSV-0017 (privileged), KSV-0012 (runs as root),
+# KSV-0014 (root fs not read-only) plus a cluster of resource /
+# capability rules.  Used in test_trivy_scan.py to assert the
+# scanner reaches the K8s ruleset.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: bad-pod
+spec:
+  containers:
+    - name: bad
+      image: ubuntu:latest
+      securityContext:
+        privileged: true
+        runAsUser: 0
