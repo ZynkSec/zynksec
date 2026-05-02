@@ -1,0 +1,9 @@
+# Phase 3 Sprint 4 IaC misconfiguration plant — Trivy fixture.
+# Deliberately bad on purpose; trivy fs --scanners misconfig
+# fires DS-0001 (`:latest` tag), DS-0002 (root user), and
+# DS-0026 (no HEALTHCHECK).  Filename ends `.bad` so a future
+# grep for "real" Dockerfiles in the repo's CI doesn't pick
+# this up.
+FROM ubuntu:latest
+USER root
+ENTRYPOINT ["/bin/sh"]

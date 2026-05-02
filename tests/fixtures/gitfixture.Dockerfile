@@ -38,6 +38,16 @@
 # entries aren't secret-shaped so they commit as plain files;
 # ``COPY``ed into the same bare repo so a single ``git clone``
 # carries gitleaks + Semgrep + OSV plants together.
+#
+# Phase 3 Sprint 4 adds Trivy IaC plants: a deliberately bad
+# ``Dockerfile.bad`` + ``pod.yaml`` pair under
+# ``tests/fixtures/iac-plants/`` that fire DS-0001 / DS-0002 /
+# DS-0026 (Dockerfile rules) and KSV-0017 / KSV-0014 / KSV-0012
+# (Kubernetes rules) in Trivy's bundled misconfig ruleset.
+# IaC files are neither secret-shaped nor SAST-pattern-shaped,
+# so they commit as plain files alongside the others — the bare
+# repo now carries fixtures for all four scanner families
+# (gitleaks + Semgrep + OSV + Trivy).
 
 # Base image pinned by digest (Phase 3 cleanup item #2).  Tag stays
 # in the comment for legibility but ``@sha256:`` is the load-bearing
@@ -121,6 +131,14 @@ COPY tests/fixtures/semgrep-plants/ /tmp/src/semgrep-plants/
 # osv-scanner walks the tree recursively for lockfiles by name.
 COPY tests/fixtures/osv-plants/ /tmp/src/osv-plants/
 
+# Phase 3 Sprint 4: copy the Trivy IaC misconfiguration plants
+# into the working tree.  ``test_trivy_scan.py`` asserts that a
+# Trivy scan in misconfig-only mode surfaces the planted DS-* +
+# KSV-* rule IDs; gitleaks / Semgrep / OSV scans are unaffected
+# (IaC files don't match secret patterns, SAST patterns, or
+# lockfile names).
+COPY tests/fixtures/iac-plants/ /tmp/src/iac-plants/
+
 # Initialise + commit the working tree, then turn it into a bare
 # repo.  Synthetic ``zynksec-fixture`` author identity makes it
 # obvious the commits are not from a real maintainer.
@@ -129,7 +147,7 @@ RUN git -c init.defaultBranch=main init -q . \
  && git config user.name "zynksec-fixture" \
  && git config commit.gpgsign false \
  && git add . \
- && git commit -q -m "phase 3 sprint 2 vulnerable-repo fixture" \
+ && git commit -q -m "phase 3 sprint 4 vulnerable-repo fixture" \
  && git clone -q --bare /tmp/src /srv/vulnerable-repo.git
 
 # Runtime: debian:bookworm-slim with python3 + git (for
