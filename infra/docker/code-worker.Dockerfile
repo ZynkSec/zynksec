@@ -5,9 +5,13 @@
 # Sibling of ``infra/docker/worker.Dockerfile`` — same Python venv +
 # Celery entry-point — but additionally installs:
 #   * ``git`` (the cloner shells out to it)
-#   * ``gitleaks`` (Phase 3 Sprint 1's repo scanner)
+#   * ``gitleaks`` (Phase 3 Sprint 1's secret scanner)
 #   * ``semgrep`` (Phase 3 Sprint 2's SAST scanner)
 #   * ``osv-scanner`` (Phase 3 Sprint 3's dependency scanner)
+#   * ``trivy`` (Phase 3 Sprint 4's IaC misconfig scanner — used
+#     in offline misconfig-only mode; we deliberately do NOT
+#     pre-cache its vulnerability DB since the misconfig policies
+#     are bundled in the binary itself)
 #
 # The split is deliberate.  ZAP workers don't need git, gitleaks,
 # or semgrep; baking them into the ZAP worker image would bloat it
@@ -79,6 +83,28 @@ ARG OSV_SCANNER_SHA256_ARM64=fa46ad2b3954db5d5335303d45de921613393285d9a93c140b6
 # release tag compromise", both of which our broader supply-chain
 # strategy treats as upstream-trust failures.
 ARG SEMGREP_VERSION=1.161.0
+
+# ---------- Trivy pin ----------
+# Phase 3 Sprint 4.  Trivy ships as a Go binary on GitHub releases
+# inside a tarball wrapper (similar to gitleaks; unlike osv-scanner
+# which is a bare binary).  SHA-256s below are read verbatim from
+# the upstream ``trivy_${VERSION}_checksums.txt`` file shipped with
+# the release.  Bumping the pin = one-line edit (version) + a
+# manual fetch of the new checksums; CI rerun against the
+# gitfixture IaC plants (with their known DS-* / KSV-* findings)
+# verifies the binary still detects them.
+#
+# We deliberately do NOT pre-cache the vulnerability DB here:
+# Sprint 4 uses Trivy in misconfig-only mode (``--scanners
+# misconfig``) with ``--skip-db-update --skip-policy-update
+# --offline-scan``.  The misconfig policies are bundled in the
+# binary; pulling the ~500 MB vuln DB at build time would just
+# bloat the image without any runtime benefit.  If a future sprint
+# adds a ``trivy-vuln`` scanner, it gets its own DB-bake step
+# guarded by an ARG so misconfig builds stay lean.
+ARG TRIVY_VERSION=0.70.0
+ARG TRIVY_SHA256_AMD64=8b4376d5d6befe5c24d503f10ff136d9e0c49f9127a4279fd110b727929a5aa9
+ARG TRIVY_SHA256_ARM64=2f6bb988b553a1bbac6bdd1ce890f5e412439564e17522b88a4541b4f364fc8d
 
 # ---------- Builder ----------
 FROM ${UV_IMAGE} AS uv-stage
@@ -171,6 +197,34 @@ RUN apt-get update -qq \
  && install -m 0755 /tmp/osv-scanner /usr/local/bin/osv-scanner \
  && /usr/local/bin/osv-scanner --version
 
+# ---------- Trivy fetcher ----------
+# Phase 3 Sprint 4.  Trivy's release tarball contains the binary
+# plus LICENSE + README + contrib templates; we extract only the
+# binary (templates aren't needed for misconfig-only mode — the
+# bundled policies in the binary itself are what we use).
+# Pattern mirrors the gitleaks-stage minus the ``--quiet`` smoke
+# test (``trivy --version`` prints multi-line output that's
+# hard to grep noise-free).
+FROM ${PYTHON_IMAGE} AS trivy-stage
+ARG TRIVY_VERSION
+ARG TRIVY_SHA256_AMD64
+ARG TRIVY_SHA256_ARM64
+RUN apt-get update -qq \
+ && apt-get install -y --no-install-recommends curl ca-certificates \
+ && rm -rf /var/lib/apt/lists/* \
+ && ARCH="$(dpkg --print-architecture)" \
+ && case "$ARCH" in \
+      amd64) TRIVY_ARCH=Linux-64bit; EXPECTED_SHA="${TRIVY_SHA256_AMD64}" ;; \
+      arm64) TRIVY_ARCH=Linux-ARM64; EXPECTED_SHA="${TRIVY_SHA256_ARM64}" ;; \
+      *) echo "unsupported arch: $ARCH" >&2; exit 1 ;; \
+    esac \
+ && curl -fsSLo /tmp/trivy.tar.gz \
+    "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_${TRIVY_ARCH}.tar.gz" \
+ && echo "${EXPECTED_SHA}  /tmp/trivy.tar.gz" | sha256sum -c - \
+ && tar -xzf /tmp/trivy.tar.gz -C /tmp trivy \
+ && install -m 0755 /tmp/trivy /usr/local/bin/trivy \
+ && /usr/local/bin/trivy --version
+
 # ---------- Runtime ----------
 FROM ${PYTHON_IMAGE} AS runtime
 
@@ -193,6 +247,7 @@ RUN apt-get update -qq \
 
 COPY --from=gitleaks-stage /usr/local/bin/gitleaks /usr/local/bin/gitleaks
 COPY --from=osv-scanner-stage /usr/local/bin/osv-scanner /usr/local/bin/osv-scanner
+COPY --from=trivy-stage /usr/local/bin/trivy /usr/local/bin/trivy
 
 # Copy the Semgrep venv as a self-contained tree, then symlink the
 # entry-point into ``/usr/local/bin/`` so plugins can call
