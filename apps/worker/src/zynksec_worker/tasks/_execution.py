@@ -40,6 +40,7 @@ from zynksec_scanners import (
     SCANNER_GITLEAKS,
     SCANNER_OSV,
     SCANNER_SEMGREP,
+    SCANNER_TRIVY,
     ScannerPlugin,
     ScanTarget,
     default_scanner_for,
@@ -47,6 +48,7 @@ from zynksec_scanners import (
 from zynksec_scanners.gitleaks.plugin import code_findings_from_gitleaks
 from zynksec_scanners.osv.plugin import code_findings_from_osv
 from zynksec_scanners.semgrep.plugin import code_findings_from_semgrep
+from zynksec_scanners.trivy.plugin import code_findings_from_trivy
 from zynksec_scanners.types import TargetKind
 from zynksec_schema import Finding, ScanProfile, code_queue, zap_queue_for_index
 
@@ -387,6 +389,28 @@ def execute_scan(scan_uuid: uuid.UUID, profile: ScanProfile) -> bool:
                             rows = [
                                 CodeFindingRow(**kwargs)
                                 for kwargs in code_findings_from_osv(
+                                    findings,
+                                    scan_id=scan_uuid,
+                                )
+                            ]
+                            _code_finding_repo.add_many(session, rows)
+                        elif scanner_family == SCANNER_TRIVY:
+                            # Phase 3 Sprint 4: Trivy emits
+                            # engine-native ``TrivyFinding`` objects
+                            # for IaC misconfigs;
+                            # ``code_findings_from_trivy`` maps to
+                            # ``CodeFinding`` rows with
+                            # ``column_number`` / ``secret_hash`` /
+                            # ``secret_kind`` / ``commit_sha`` all
+                            # NULL.  ``line_number`` carries Trivy's
+                            # ``CauseMetadata.StartLine`` when
+                            # available, NULL otherwise (e.g.,
+                            # DS-0026 "No HEALTHCHECK" fires on
+                            # absence of a directive — no line to
+                            # point at).
+                            rows = [
+                                CodeFindingRow(**kwargs)
+                                for kwargs in code_findings_from_trivy(
                                     findings,
                                     scan_id=scan_uuid,
                                 )

@@ -10,9 +10,10 @@ this kind, and which one was explicitly requested if any?".
 
 Shape:
 
-  * ``SCANNER_ZAP`` / ``SCANNER_GITLEAKS`` / ``SCANNER_SEMGREP`` —
-    canonical scanner-name string constants.  Compared by string
-    equality across the API + worker; both processes need to agree.
+  * ``SCANNER_ZAP`` / ``SCANNER_GITLEAKS`` / ``SCANNER_SEMGREP`` /
+    ``SCANNER_OSV`` / ``SCANNER_TRIVY`` — canonical scanner-name
+    string constants.  Compared by string equality across the API
+    + worker; both processes need to agree.
 
   * Internal :class:`_ScannerEntry` carries each scanner's
     ``supported_kinds`` set + a ``default_for_kinds`` set
@@ -54,6 +55,7 @@ SCANNER_ZAP: str = "zap"
 SCANNER_GITLEAKS: str = "gitleaks"
 SCANNER_SEMGREP: str = "semgrep"
 SCANNER_OSV: str = "osv-scanner"
+SCANNER_TRIVY: str = "trivy"
 
 
 class UnknownScanner(KeyError):  # noqa: N818 — matches existing KeyError-shape convention
@@ -109,6 +111,16 @@ _REGISTRY: dict[str, _ScannerEntry] = {
         # gitleaks (preserves the kind=repo backward-compat
         # contract from Sprint 1).  Opt in via explicit
         # ``scanner="osv-scanner"`` to scan a repo's lockfiles.
+        default_for_kinds=frozenset(),
+    ),
+    SCANNER_TRIVY: _ScannerEntry(
+        name=SCANNER_TRIVY,
+        supported_kinds=frozenset({"repo"}),
+        # Phase 3 Sprint 4: opt-in only.  Default for kind=repo
+        # remains gitleaks across the entire 4-scanner registry.
+        # Opt in via explicit ``scanner="trivy"`` to scan a
+        # repo's IaC files (Dockerfiles, K8s manifests, Terraform,
+        # Helm, CloudFormation) for misconfigurations.
         default_for_kinds=frozenset(),
     ),
 }
