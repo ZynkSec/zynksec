@@ -107,11 +107,21 @@ jobs:
       - name: Trivy filesystem scan
         run: |
           set -euo pipefail
+          # Skip tests/fixtures — purpose-built vulnerable test material
+          # for our own scanners.  The OSV-Scanner Sprint 3 plant
+          # (lodash@4.17.20, CVE-2021-23337) is deliberately vulnerable
+          # so the scanner has something to find; trivy's repo-level
+          # scan was catching it as a real finding.  Same pattern as the
+          # gitfixture Dockerfile's build-time secret construction
+          # (Sprint 1 vs. GitHub secret scanning) — anything under
+          # tests/fixtures/ is purpose-built and shouldn't trip
+          # production-security CI.
           trivy fs \
             --severity HIGH,CRITICAL \
             --ignore-unfixed \
             --exit-code 1 \
             --format table \
+            --skip-dirs tests/fixtures \
             .
 
   build-images:

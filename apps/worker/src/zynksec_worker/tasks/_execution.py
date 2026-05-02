@@ -38,12 +38,14 @@ from zynksec_db import (
 from zynksec_db import Finding as FindingRow
 from zynksec_scanners import (
     SCANNER_GITLEAKS,
+    SCANNER_OSV,
     SCANNER_SEMGREP,
     ScannerPlugin,
     ScanTarget,
     default_scanner_for,
 )
 from zynksec_scanners.gitleaks.plugin import code_findings_from_gitleaks
+from zynksec_scanners.osv.plugin import code_findings_from_osv
 from zynksec_scanners.semgrep.plugin import code_findings_from_semgrep
 from zynksec_scanners.types import TargetKind
 from zynksec_schema import Finding, ScanProfile, code_queue, zap_queue_for_index
@@ -366,6 +368,25 @@ def execute_scan(scan_uuid: uuid.UUID, profile: ScanProfile) -> bool:
                             rows = [
                                 CodeFindingRow(**kwargs)
                                 for kwargs in code_findings_from_semgrep(
+                                    findings,
+                                    scan_id=scan_uuid,
+                                )
+                            ]
+                            _code_finding_repo.add_many(session, rows)
+                        elif scanner_family == SCANNER_OSV:
+                            # Phase 3 Sprint 3: OSV-Scanner emits
+                            # engine-native ``OsvFinding`` objects;
+                            # ``code_findings_from_osv`` maps to
+                            # ``CodeFinding`` rows with
+                            # ``line_number`` / ``column_number`` /
+                            # ``secret_hash`` / ``secret_kind`` /
+                            # ``commit_sha`` all NULL (lockfile
+                            # findings are package-shaped, not
+                            # line-shaped).  ``line_number`` is
+                            # nullable since migration 0009.
+                            rows = [
+                                CodeFindingRow(**kwargs)
+                                for kwargs in code_findings_from_osv(
                                     findings,
                                     scan_id=scan_uuid,
                                 )

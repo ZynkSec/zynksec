@@ -31,6 +31,7 @@ from __future__ import annotations
 
 from zynksec_scanners import (
     SCANNER_GITLEAKS,
+    SCANNER_OSV,
     SCANNER_SEMGREP,
     SCANNER_ZAP,
     ScannerPlugin,
@@ -40,6 +41,7 @@ from zynksec_scanners import (
 
 from zynksec_worker.config import WorkerSettings
 from zynksec_worker.runners.gitleaks_runner import build_gitleaks_plugin
+from zynksec_worker.runners.osv_runner import build_osv_plugin
 from zynksec_worker.runners.semgrep_runner import build_semgrep_plugin
 from zynksec_worker.runners.zap_runner import build_zap_plugin
 
@@ -58,6 +60,8 @@ def build_plugin_by_name(name: str, settings: WorkerSettings) -> ScannerPlugin:
         return build_gitleaks_plugin(settings)
     if name == SCANNER_SEMGREP:
         return build_semgrep_plugin(settings)
+    if name == SCANNER_OSV:
+        return build_osv_plugin(settings)
     raise KeyError(f"no plugin builder registered for scanner {name!r}")
 
 
@@ -74,6 +78,7 @@ def build_plugin_for(kind: TargetKind, settings: WorkerSettings) -> ScannerPlugi
 
 __all__ = [
     "build_gitleaks_plugin",
+    "build_osv_plugin",
     "build_plugin_by_name",
     "build_plugin_for",
     "build_semgrep_plugin",

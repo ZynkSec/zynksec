@@ -29,6 +29,15 @@
 # The runtime stage ``COPY``s the whole directory into the bare
 # repo so a single ``git clone`` carries both gitleaks plants AND
 # Semgrep plants in one tree.
+#
+# Phase 3 Sprint 3 adds OSV-Scanner plants: a tiny
+# ``package.json`` + ``package-lock.json`` pair under
+# ``tests/fixtures/osv-plants/`` that pins ``lodash@4.17.20``
+# (carries CVE-2021-23337 / GHSA-35jh-r3h4-6jhm command-injection
+# + GHSA-29mw-wpgm-hmr9 ReDoS).  Like the Semgrep plants, lockfile
+# entries aren't secret-shaped so they commit as plain files;
+# ``COPY``ed into the same bare repo so a single ``git clone``
+# carries gitleaks + Semgrep + OSV plants together.
 
 # Base image pinned by digest (Phase 3 cleanup item #2).  Tag stays
 # in the comment for legibility but ``@sha256:`` is the load-bearing
@@ -103,6 +112,14 @@ PY
 # Semgrep plants (3 SAST findings) — both sets live in the same
 # bare repo, the scanner family is what differentiates.
 COPY tests/fixtures/semgrep-plants/ /tmp/src/semgrep-plants/
+
+# Phase 3 Sprint 3: copy the OSV-Scanner lockfile plants into the
+# working tree.  ``test_osv_scan.py`` asserts that an OSV scan
+# surfaces at least the lodash@4.17.20 advisory cluster; gitleaks
+# / Semgrep scans are unaffected (lockfile entries don't match
+# secret patterns or SAST rules).  Lives at the repo root because
+# osv-scanner walks the tree recursively for lockfiles by name.
+COPY tests/fixtures/osv-plants/ /tmp/src/osv-plants/
 
 # Initialise + commit the working tree, then turn it into a bare
 # repo.  Synthetic ``zynksec-fixture`` author identity makes it
