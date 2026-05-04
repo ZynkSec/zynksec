@@ -20,10 +20,64 @@ export type Severity = "low" | "medium" | "high" | "critical";
 
 export type ScanStatus = "queued" | "running" | "completed" | "failed";
 
+/** TargetKind — mirrors zynksec_scanners.types.TargetKind. */
+export type TargetKind = "web_app" | "api" | "repo";
+
+/** ScanProfile — mirrors zynksec_schema.scan_profile.ScanProfile. */
+export type ScanProfile = "PASSIVE" | "SAFE_ACTIVE" | "AGGRESSIVE";
+
 export interface TargetSummary {
   id: string;
   name: string;
   url: string;
+}
+
+/**
+ * Full Target record returned by GET /api/v1/targets.  Mirrors
+ * apps/api/.../schemas/target.py::TargetRead.  Used by the
+ * "New Scan" form's existing-target picker.
+ */
+export interface Target {
+  id: string;
+  project_id: string;
+  name: string;
+  url: string;
+  kind: TargetKind;
+  created_at: string;
+  updated_at: string;
+}
+
+/**
+ * Per-kind catalogue entry from GET /api/v1/scanners.  Drives the
+ * dashboard's kind-aware scanner + scan-profile pickers.
+ */
+export interface ScannerEntry {
+  name: string;
+  is_default: boolean;
+}
+
+export interface KindCatalog {
+  scanners: ScannerEntry[];
+  scan_profiles: ScanProfile[];
+}
+
+export interface ScannerCatalog {
+  kinds: Record<TargetKind, KindCatalog>;
+}
+
+/**
+ * Body of POST /api/v1/scans.  Mirrors
+ * apps/api/.../schemas/scan.py::ScanCreate.  Exactly one of
+ * target_id or target_url must be provided; the API returns a
+ * canonical-envelope 422 (scan_target_spec_conflict) for
+ * both/neither.  scan_profile + scanner are optional (the API
+ * resolves defaults from the target's kind).
+ */
+export interface ScanCreateRequest {
+  target_id?: string;
+  target_url?: string;
+  scan_profile?: ScanProfile;
+  scanner?: string;
 }
 
 /**

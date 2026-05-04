@@ -22,6 +22,7 @@ from zynksec_scanners.registry import (
     UnknownScanner,
     default_scanner_for,
     resolve_scanner,
+    scan_profiles_for_kind,
     scanner_for_kind,
     scanners_for_kind,
 )
@@ -53,6 +54,7 @@ __all__ = [
     "__version__",
     "default_scanner_for",
     "resolve_scanner",
+    "scan_profiles_for_kind",
     "scanner_for_kind",
     "scanners_for_kind",
 ]

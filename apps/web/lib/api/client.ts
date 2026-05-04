@@ -1,25 +1,34 @@
 /**
- * Thin TypeScript wrapper over the FastAPI /api/v1/scans endpoints.
+ * Thin TypeScript wrapper over the FastAPI endpoints the dashboard
+ * consumes.
  *
- * Phase 4 Sprint 1 surface:
+ * Phase 4 Sprint 1 surface (server components):
  *   - listScans() → GET /api/v1/scans (newest first)
  *   - getScan(id) → GET /api/v1/scans/{id} (with embedded findings)
  *
- * Deliberately NOT using SWR / React Query / TanStack — Next.js
- * server components do the data fetching directly, so the cache
- * concerns those libs solve don't apply at this scope.  If/when
- * client-driven mutations land (scan triggering UI, target CRUD),
- * a query lib comes in then, not before.
+ * Phase 4 Sprint 2 surface (server + client components):
+ *   - listTargets()         → GET /api/v1/targets  (server)
+ *   - getScannerCatalog()   → GET /api/v1/scanners (server)
+ *   - createScan(body)      → POST /api/v1/scans   (client)
  *
- * Cache strategy: ``cache: "no-store"`` on every request so the
- * dashboard always sees the latest scan state.  ZAP scans take
- * minutes to complete; an aggressively cached list view would
- * lie about which scans are still running.  Future optimisation
- * could swap to ``revalidate`` once we have a websocket/SSE
- * channel for status changes.
+ * Deliberately NOT using SWR / React Query / TanStack.  The form
+ * is a single submit + redirect, no client-side cache to share;
+ * useState + native fetch is the right shape at this scope.  If
+ * a future sprint adds 10 forms or real-time updates, revisit.
+ *
+ * Cache strategy: ``cache: "no-store"`` on every server-side GET
+ * so the dashboard always sees the latest scan state.  ZAP scans
+ * take minutes to complete; an aggressively cached list view
+ * would lie about which scans are still running.
  */
 
-import type { ApiErrorBody, Scan } from "@/lib/api/types";
+import type {
+  ApiErrorBody,
+  Scan,
+  ScanCreateRequest,
+  ScannerCatalog,
+  Target,
+} from "@/lib/api/types";
 
 /**
  * Resolve the API base URL from the environment.
@@ -105,6 +114,47 @@ export async function listScans(): Promise<Scan[]> {
  */
 export async function getScan(id: string): Promise<Scan> {
   const res = await fetch(`${API_BASE}/api/v1/scans/${encodeURIComponent(id)}`, {
+    cache: "no-store",
+  });
+  return readJson<Scan>(res);
+}
+
+/**
+ * GET /api/v1/targets — every Target in the implicit Local Dev
+ * project.  Powers the existing-target picker on the New Scan
+ * form.
+ */
+export async function listTargets(): Promise<Target[]> {
+  const res = await fetch(`${API_BASE}/api/v1/targets`, { cache: "no-store" });
+  return readJson<Target[]>(res);
+}
+
+/**
+ * GET /api/v1/scanners — per-kind plugin catalogue.  Pure
+ * metadata: cached for the request only (still ``no-store`` so a
+ * mid-session plugin addition surfaces immediately).
+ */
+export async function getScannerCatalog(): Promise<ScannerCatalog> {
+  const res = await fetch(`${API_BASE}/api/v1/scanners`, { cache: "no-store" });
+  return readJson<ScannerCatalog>(res);
+}
+
+/**
+ * POST /api/v1/scans — enqueue a new scan.  Returns the freshly
+ * persisted Scan with status="queued" and empty findings; the
+ * caller redirects to /scans/{response.id} where the detail page
+ * picks up the running state.
+ *
+ * The XOR between target_id and target_url is enforced server-
+ * side (canonical-envelope 422 ``scan_target_spec_conflict`` for
+ * both/neither).  Callers should pre-validate but the API is the
+ * source of truth.
+ */
+export async function createScan(body: ScanCreateRequest): Promise<Scan> {
+  const res = await fetch(`${API_BASE}/api/v1/scans`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
     cache: "no-store",
   });
   return readJson<Scan>(res);
