@@ -30,6 +30,11 @@ downloads/
 eggs/
 .eggs/
 lib/
+# Next.js workspace's lib/ holds API client + util TypeScript modules,
+# not Python build artefacts.  Un-ignore it so the frontend's
+# typed API surface is committable.
+!apps/web/lib/
+!apps/web/lib/**
 lib64/
 parts/
 sdist/

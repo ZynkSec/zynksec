@@ -1,0 +1,53 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * shadcn/ui-compatible CSS variable theme.  Light theme as the
+ * default; future sprints can flip to dark via the ``.dark``
+ * selector on ``<html>``.  Variables are HSL triplets without
+ * the ``hsl()`` wrapper so Tailwind can compose them with
+ * opacity utilities (e.g. ``bg-primary/50``).
+ *
+ * Severity tokens (--severity-*) are Zynksec-specific extras on
+ * top of the standard shadcn palette — they pin the four levels
+ * to a colour scale operators already associate with risk:
+ * green=low, amber=medium, orange=high, red=critical.
+ */
+:root {
+  --background: 0 0% 100%;
+  --foreground: 240 10% 3.9%;
+  --card: 0 0% 100%;
+  --card-foreground: 240 10% 3.9%;
+  --primary: 240 5.9% 10%;
+  --primary-foreground: 0 0% 98%;
+  --secondary: 240 4.8% 95.9%;
+  --secondary-foreground: 240 5.9% 10%;
+  --muted: 240 4.8% 95.9%;
+  --muted-foreground: 240 3.8% 46.1%;
+  --accent: 240 4.8% 95.9%;
+  --accent-foreground: 240 5.9% 10%;
+  --destructive: 0 84.2% 60.2%;
+  --destructive-foreground: 0 0% 98%;
+  --border: 240 5.9% 90%;
+  --input: 240 5.9% 90%;
+  --ring: 240 5% 64.9%;
+  --radius: 0.5rem;
+
+  --severity-low: 142 71% 45%;
+  --severity-medium: 38 92% 50%;
+  --severity-high: 25 95% 53%;
+  --severity-critical: 0 84% 60%;
+}
+
+* {
+  border-color: hsl(var(--border));
+}
+
+body {
+  background-color: hsl(var(--background));
+  color: hsl(var(--foreground));
+  font-feature-settings:
+    "rlig" 1,
+    "calt" 1;
+}
