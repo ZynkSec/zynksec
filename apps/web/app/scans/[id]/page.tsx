@@ -4,10 +4,12 @@ import type { ReactElement } from "react";
 
 import { CodeFindingsTable } from "@/components/code-findings-table";
 import { FindingsTable } from "@/components/findings-table";
+import { SeverityFilter } from "@/components/severity-filter";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ApiError, getScan } from "@/lib/api/client";
 import type { ScanStatus } from "@/lib/api/types";
+import { filterBySeverity, parseSeverityParam } from "@/lib/severity";
 
 /**
  * /scans/[id] — single scan with embedded HTTP and code findings.
@@ -39,10 +41,15 @@ function fmtDate(iso: string | null): string {
 
 interface PageProps {
   params: Promise<{ id: string }>;
+  searchParams: Promise<{ severity?: string | string[] }>;
 }
 
-export default async function ScanDetailPage({ params }: PageProps): Promise<ReactElement> {
+export default async function ScanDetailPage({
+  params,
+  searchParams,
+}: PageProps): Promise<ReactElement> {
   const { id } = await params;
+  const { severity: severityParam } = await searchParams;
   let scan;
   try {
     scan = await getScan(id);
@@ -55,6 +62,15 @@ export default async function ScanDetailPage({ params }: PageProps): Promise<Rea
     }
     throw err;
   }
+
+  // Parse the URL filter and apply it server-side so the rendered
+  // tables are already filtered when they reach the browser —
+  // toggling a chip only refetches the markup, not the data.
+  const severityFilter = parseSeverityParam(severityParam);
+  const filteredFindings = filterBySeverity(scan.findings, severityFilter);
+  const filteredCodeFindings = filterBySeverity(scan.code_findings, severityFilter);
+  const totalUnfiltered = scan.findings.length + scan.code_findings.length;
+  const totalFiltered = filteredFindings.length + filteredCodeFindings.length;
 
   return (
     <section className="space-y-6">
@@ -105,7 +121,7 @@ export default async function ScanDetailPage({ params }: PageProps): Promise<Rea
         </CardContent>
       </Card>
 
-      {scan.findings.length === 0 && scan.code_findings.length === 0 ? (
+      {totalUnfiltered === 0 ? (
         <Card>
           <CardContent className="p-8 text-center">
             <p className="text-base font-medium">No findings</p>
@@ -118,18 +134,34 @@ export default async function ScanDetailPage({ params }: PageProps): Promise<Rea
         </Card>
       ) : (
         <>
+          <div className="flex items-center justify-between">
+            <SeverityFilter selected={severityFilter} />
+            {severityFilter.size > 0 && (
+              <p className="text-xs text-muted-foreground">
+                Showing {totalFiltered} of {totalUnfiltered}
+              </p>
+            )}
+          </div>
+
           {scan.findings.length > 0 && (
             <Card>
               <CardHeader>
                 <CardTitle className="text-base">
                   HTTP findings{" "}
                   <span className="ml-1 text-sm font-normal text-muted-foreground">
-                    ({scan.findings.length})
+                    ({filteredFindings.length}
+                    {severityFilter.size > 0 && ` of ${scan.findings.length}`})
                   </span>
                 </CardTitle>
               </CardHeader>
               <CardContent className="p-0">
-                <FindingsTable findings={scan.findings} />
+                {filteredFindings.length > 0 ? (
+                  <FindingsTable findings={filteredFindings} />
+                ) : (
+                  <p className="px-6 pb-6 text-sm text-muted-foreground">
+                    No HTTP findings match the current severity filter.
+                  </p>
+                )}
               </CardContent>
             </Card>
           )}
@@ -139,12 +171,19 @@ export default async function ScanDetailPage({ params }: PageProps): Promise<Rea
                 <CardTitle className="text-base">
                   Code findings{" "}
                   <span className="ml-1 text-sm font-normal text-muted-foreground">
-                    ({scan.code_findings.length})
+                    ({filteredCodeFindings.length}
+                    {severityFilter.size > 0 && ` of ${scan.code_findings.length}`})
                   </span>
                 </CardTitle>
               </CardHeader>
               <CardContent className="p-0">
-                <CodeFindingsTable findings={scan.code_findings} />
+                {filteredCodeFindings.length > 0 ? (
+                  <CodeFindingsTable findings={filteredCodeFindings} />
+                ) : (
+                  <p className="px-6 pb-6 text-sm text-muted-foreground">
+                    No code findings match the current severity filter.
+                  </p>
+                )}
               </CardContent>
             </Card>
           )}
