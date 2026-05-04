@@ -117,3 +117,11 @@ class ScanRead(BaseModel):
     # list based on the resolved Target kind, so a scan never carries
     # both lists populated at once).
     code_findings: list[CodeFindingRead] = Field(default_factory=list)
+    # Phase 4 Sprint 1: total finding count across both tables
+    # (``findings`` + ``code_findings``) for the scan.  The list
+    # endpoint ``GET /api/v1/scans`` populates this from a single
+    # aggregate query so the UI can render "12 findings" per row
+    # without a per-scan drill-in (no N+1).  ``None`` on the detail
+    # endpoint and on POST responses — callers there have the
+    # populated lists and can compute their own len() if needed.
+    findings_count: int | None = None

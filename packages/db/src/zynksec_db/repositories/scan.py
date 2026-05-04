@@ -6,9 +6,11 @@ import logging
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select, union_all, update
 from sqlalchemy.orm import Session
 
+from zynksec_db.models.code_finding import CodeFinding
+from zynksec_db.models.finding import Finding
 from zynksec_db.models.scan import Scan
 from zynksec_db.repositories.base import Repository
 
@@ -23,6 +25,52 @@ class ScanRepository(Repository[Scan]):
     """
 
     model = Scan
+
+    def list_by_project(
+        self,
+        session: Session,
+        project_id: uuid.UUID,
+    ) -> list[tuple[Scan, int]]:
+        """Return every scan in a project with its total findings count,
+        newest first.
+
+        Phase 4 Sprint 1.  Powers ``GET /api/v1/scans``.  The
+        ``findings_count`` is the sum of ``findings`` (ZAP, HTTP-shaped)
+        and ``code_findings`` (gitleaks / semgrep / osv-scanner / trivy,
+        file-shaped) rows owned by each scan.
+
+        Implemented as one query per family folded into a single
+        ``UNION ALL`` aggregate so the list endpoint stays at O(1) DB
+        round-trips regardless of how many scans the project has —
+        no N+1 even with 100k scans.  Newest-first ordering by
+        ``created_at DESC`` matches what
+        :func:`ScanGroupRepository.list_by_project` does.
+        """
+        # Count rows in both finding tables per scan_id, then UNION
+        # ALL them so the outer aggregate adds the two contributions
+        # together.  COALESCE keeps the LEFT JOIN result as 0 for
+        # scans with no findings of either kind (rather than NULL
+        # tripping the int cast in the read model).
+        finding_counts = select(Finding.scan_id.label("scan_id"), func.count().label("n")).group_by(
+            Finding.scan_id
+        )
+        code_finding_counts = select(
+            CodeFinding.scan_id.label("scan_id"), func.count().label("n")
+        ).group_by(CodeFinding.scan_id)
+        unioned = union_all(finding_counts, code_finding_counts).subquery("c")
+        totals = (
+            select(unioned.c.scan_id, func.sum(unioned.c.n).label("total"))
+            .group_by(unioned.c.scan_id)
+            .subquery("t")
+        )
+        stmt = (
+            select(Scan, func.coalesce(totals.c.total, 0).label("findings_count"))
+            .outerjoin(totals, totals.c.scan_id == Scan.id)
+            .where(Scan.project_id == project_id)
+            .order_by(Scan.created_at.desc(), Scan.id.desc())
+        )
+        rows = session.execute(stmt).all()
+        return [(scan, int(count)) for scan, count in rows]
 
     def list_by_group(
         self,

@@ -11,7 +11,7 @@ from __future__ import annotations
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
 from zynksec_db import (
     CodeFindingRepository,
@@ -86,6 +86,8 @@ def _scan_to_read(
     scan: Scan,
     findings: list[object],
     code_findings: list[CodeFindingRead] | None = None,
+    *,
+    findings_count: int | None = None,
 ) -> ScanRead:
     """Explicit ORM -> Pydantic construction.
 
@@ -96,6 +98,12 @@ def _scan_to_read(
     The ``target`` field is built lazily from the loaded relationship
     when ``scan.target_id`` is set, ``None`` otherwise (legacy
     target_url scans + pre-Phase-2 rows).
+
+    ``findings_count`` is populated only by the list endpoint
+    (``GET /api/v1/scans``), which carries an aggregated total from
+    a single COUNT query.  Detail and POST responses leave it
+    ``None`` — those callers have the populated ``findings`` /
+    ``code_findings`` lists and can compute ``len()`` themselves.
     """
     target_summary: TargetSummary | None = None
     if scan.target_id is not None:
@@ -121,6 +129,7 @@ def _scan_to_read(
         scanner=scan.scanner,
         findings=findings,  # type: ignore[arg-type]
         code_findings=code_findings or [],
+        findings_count=findings_count,
     )
 
 
@@ -275,6 +284,48 @@ def _next_instance_index(session: Session, repo: ScanRepository) -> int:
     n = settings.zap_instance_count
     count = repo.total_count(session)
     return (count % n) + 1
+
+
+@router.get(
+    "",
+    response_model=list[ScanRead],
+    summary="List scans in a project (newest first)",
+)
+def list_scans(
+    session: SessionDep,
+    repo: ScanRepoDep,
+    project_id: Annotated[uuid.UUID | None, Query()] = None,
+) -> list[ScanRead]:
+    """List scans in a project, newest first.
+
+    Phase 4 Sprint 1.  Powers the dashboard's scan list view.  Each
+    row carries an aggregated ``findings_count`` (sum of HTTP
+    ``findings`` + repo ``code_findings``) so the UI can render
+    "12 findings" per row without an N+1 drill-in; the list does
+    NOT embed the populated finding lists themselves — clients
+    GET ``/api/v1/scans/{id}`` for that.
+
+    No pagination this sprint — same deferral as
+    ``GET /api/v1/targets`` and ``GET /api/v1/scan-groups``; the
+    three endpoints get pagination together in a focused
+    follow-up.
+
+    Project resolution: ``project_id`` query param is optional and
+    falls back to the implicit Local Dev project (CLAUDE.md §2 +
+    ``_project_resolution`` helper) — same convention as the other
+    project-scoped list endpoints.
+    """
+    project = resolve_project_for_request(session, project_id)
+    rows = repo.list_by_project(session, project.id)
+    return [
+        _scan_to_read(
+            scan,
+            findings=[],
+            code_findings=[],
+            findings_count=count,
+        )
+        for scan, count in rows
+    ]
 
 
 @router.get(
