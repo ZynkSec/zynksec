@@ -22,13 +22,31 @@
 import type { ApiErrorBody, Scan } from "@/lib/api/types";
 
 /**
- * Resolve the API base URL from the environment.  ``NEXT_PUBLIC_*``
- * is the only flavour that ships to the browser bundle; we read
- * it once at module load so server-side and client-side code
- * agree.  The fallback ``http://localhost:8000`` matches the
- * docker-compose dev stack's exposed API port.
+ * Resolve the API base URL from the environment.
+ *
+ * Phase 4 Sprint 1's data-fetching helpers run ONLY inside server
+ * components — the dashboard's client components don't call the
+ * API directly.  That means we can prefer a server-only env var
+ * (``INTERNAL_API_URL``) so the server-side fetch reaches the
+ * API service over Docker's intra-network DNS (``http://api:8000``)
+ * while the browser bundle never sees that hostname.
+ *
+ * Resolution order:
+ *   1. ``INTERNAL_API_URL`` — set by the docker-compose frontend
+ *      service to ``http://api:8000`` so server-component fetches
+ *      bypass the host port.
+ *   2. ``NEXT_PUBLIC_API_URL`` — the browser-visible fallback;
+ *      also the only var available if a future sprint adds a
+ *      client-side API call.
+ *   3. ``http://localhost:8000`` — local-dev default for a
+ *      host-side ``pnpm dev`` outside compose.
+ *
+ * If both 1 and 2 are set, the server uses (1) and any future
+ * client-component fetch would use (2); both pointing at the same
+ * logical API is the operator's job to keep consistent.
  */
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const API_BASE =
+  process.env.INTERNAL_API_URL ?? process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 /**
  * Thrown when the backend returns a non-2xx response.  Carries

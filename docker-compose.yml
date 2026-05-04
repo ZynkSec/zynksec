@@ -292,6 +292,64 @@ services:
     networks:
       - zynksec-core
 
+  # ---------- Frontend (Next.js dashboard) ----------
+  # Phase 4 Sprint 1 lights up the dashboard.  Read-only scan list
+  # + detail views.  Runs ``next dev`` against the existing
+  # pnpm-monorepo source via a bind mount, so HMR works without
+  # a separate build step — same dev-loop as the backend (uvicorn
+  # --reload).
+  #
+  # Two API URLs by design:
+  #   * INTERNAL_API_URL=http://api:8000 — server-component fetches
+  #     run inside this container and reach the API over the
+  #     Docker bridge.
+  #   * NEXT_PUBLIC_API_URL=http://localhost:8000 — inlined into
+  #     the browser bundle for any future client-side fetches.
+  # The dual-URL split keeps the host-DNS dance honest; see the
+  # comment in apps/web/lib/api/client.ts for the resolution order.
+  #
+  # Joins zynksec-core only — the frontend never reaches the
+  # zynksec-scan or zynksec-targets networks (CLAUDE.md §5
+  # network zone discipline).
+  frontend:
+    image: node:22-bookworm-slim
+    container_name: zynksec-frontend
+    restart: unless-stopped
+    profiles:
+      - dev
+    working_dir: /app
+    # Bind-mount the entire monorepo so HMR sees source changes
+    # outside apps/web/ (e.g., shared types in lib/api/types.ts).
+    # node_modules is bind-mounted into a named volume so
+    # ``pnpm install`` inside the container doesn't fight the
+    # host's macOS / Linux node_modules layout.
+    volumes:
+      - ./:/app
+      - frontend-node-modules:/app/node_modules
+      - frontend-web-node-modules:/app/apps/web/node_modules
+    environment:
+      INTERNAL_API_URL: http://api:8000
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+      # Pin pnpm version inside the container — node:22 ships
+      # corepack but no enabled package manager by default.
+      PNPM_HOME: /pnpm
+      PATH: /pnpm:$PATH
+    command:
+      - sh
+      - -c
+      - >
+        corepack enable &&
+        corepack prepare pnpm@10.33.2 --activate &&
+        pnpm install --frozen-lockfile &&
+        pnpm --filter @zynksec/web dev --hostname 0.0.0.0
+    ports:
+      - "3000:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - zynksec-core
+
   # ---------- GlitchTip observability stack (opt-in: --profile obs) ----
   # GlitchTip is Sentry-compatible, AGPLv3, self-hosted error tracking.
   # It gets its OWN postgres + redis so "the thing that captures our
@@ -428,3 +486,14 @@ volumes:
     # Only created when `--profile obs` is active; survives a profile-off
     # restart so captured events persist across dev sessions.
     name: zynksec-glitchtip-pg-data
+  frontend-node-modules:
+    # Phase 4 Sprint 1: separate volume for the workspace-root
+    # node_modules so the bind-mounted host source doesn't
+    # collide with the container's pnpm-installed deps.
+    name: zynksec-frontend-node-modules
+  frontend-web-node-modules:
+    # Same idea for apps/web/node_modules — pnpm hoists some
+    # deps to the workspace root and leaves others package-local;
+    # we shadow both layers so the host's installed tree (built
+    # against host arch) doesn't bleed into the container.
+    name: zynksec-frontend-web-node-modules

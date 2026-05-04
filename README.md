@@ -64,6 +64,21 @@ Brings up the core stack: api (port 8000), worker, postgres, redis.
 No scanning, no error tracking, no lab target. Enough to poke at
 `GET /api/v1/health`, `GET /api/v1/ready`, and run unit tests.
 
+### Dashboard (Phase 4 Sprint 1+)
+
+```bash
+docker compose --profile dev up -d frontend
+# → http://localhost:3000 (read-only scan list + detail view)
+```
+
+Brings up the Next.js dashboard alongside the API. Read-only this
+sprint: the list view shows every scan in the implicit Local Dev
+project newest-first; clicking a scan opens the detail view with
+HTTP findings (ZAP) and code findings (gitleaks/semgrep/osv-scanner/
+trivy) tables, both filterable by severity via a `?severity=` URL
+search param. Scans are still created via `POST /api/v1/scans`;
+scan-triggering UI is a future sprint.
+
 ### Lab scan
 
 ```bash
