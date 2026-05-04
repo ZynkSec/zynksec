@@ -4,16 +4,20 @@ from zynksec_api.schemas.code_finding import CodeFindingRead, code_finding_from_
 from zynksec_api.schemas.finding import FindingRead, finding_from_row
 from zynksec_api.schemas.scan import ScanCreate, ScanRead
 from zynksec_api.schemas.scan_group import ScanGroupCreate, ScanGroupRead, ScanGroupSummary
+from zynksec_api.schemas.scanner_catalog import KindCatalog, ScannerCatalog, ScannerEntry
 from zynksec_api.schemas.target import TargetCreate, TargetRead, TargetSummary
 
 __all__ = [
     "CodeFindingRead",
     "FindingRead",
+    "KindCatalog",
     "ScanCreate",
     "ScanGroupCreate",
     "ScanGroupRead",
     "ScanGroupSummary",
     "ScanRead",
+    "ScannerCatalog",
+    "ScannerEntry",
     "TargetCreate",
     "TargetRead",
     "TargetSummary",

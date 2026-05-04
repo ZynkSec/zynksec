@@ -144,6 +144,44 @@ def scanners_for_kind(kind: TargetKind) -> set[str]:
     return {entry.name for entry in _REGISTRY.values() if kind in entry.supported_kinds}
 
 
+# Per-kind list of scan profiles a UI should expose for that kind.
+# Source of truth for the *plugin*-side is each plugin's
+# ``supported_intensities`` class attribute; we mirror it here as a
+# hardcoded map so the registry (which lives in the API process)
+# doesn't need to import the plugin classes — those pull in
+# ZAP / gitleaks / osv-scanner / trivy / semgrep dependencies that
+# only the worker image carries.
+#
+# Empirical state at the time of writing:
+#   * ZapPlugin.supported_intensities = {PASSIVE, SAFE_ACTIVE, AGGRESSIVE}
+#   * Gitleaks/Semgrep/OSV-Scanner/TrivyPlugin.supported_intensities = {PASSIVE}
+# A future plugin that declares a NEW intensity (e.g., "FAST_PASSIVE")
+# requires updating this map alongside the plugin definition; same
+# discipline as updating ``_REGISTRY`` when adding a new scanner.
+_SCAN_PROFILES_BY_KIND: dict[TargetKind, list[str]] = {
+    "web_app": ["PASSIVE", "SAFE_ACTIVE", "AGGRESSIVE"],
+    "api": ["PASSIVE", "SAFE_ACTIVE", "AGGRESSIVE"],
+    # kind=repo: every registered code scanner runs at PASSIVE only
+    # (no AGGRESSIVE concept for filesystem scans).  An empty list
+    # tells the dashboard to hide the scan-profile picker entirely
+    # rather than show a single useless choice.
+    "repo": [],
+}
+
+
+def scan_profiles_for_kind(kind: TargetKind) -> list[str]:
+    """Return the ordered list of scan profiles available for this kind.
+
+    Phase 4 Sprint 2 added this to power the frontend's "New Scan"
+    form — the picker is hidden for ``kind=repo`` (no profiles
+    apply), shown for web_app / api with the three ZAP intensities.
+
+    Order is preserved from low-to-high intensity so a UI rendering
+    them in order produces the canonical operator-facing sequence.
+    """
+    return list(_SCAN_PROFILES_BY_KIND.get(kind, []))
+
+
 def resolve_scanner(kind: TargetKind, name: str | None) -> str:
     """Pick the scanner name to use given a kind and optional explicit name.
 

@@ -24,7 +24,7 @@ from zynksec_api import __version__
 from zynksec_api.config import get_settings
 from zynksec_api.exceptions import ZynksecError, current_correlation_id
 from zynksec_api.logging_config import configure_logging
-from zynksec_api.routers import health, scan_groups, scans, targets
+from zynksec_api.routers import health, scan_groups, scanners, scans, targets
 
 _CORRELATION_ID_HEADER = "X-Correlation-Id"
 
@@ -138,6 +138,7 @@ def create_app() -> FastAPI:
     app.include_router(scans.router)
     app.include_router(targets.router)
     app.include_router(scan_groups.router)
+    app.include_router(scanners.router)
     return app
 
 
