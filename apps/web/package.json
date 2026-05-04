@@ -2,24 +2,36 @@
   "name": "@zynksec/web",
   "version": "0.0.0",
   "private": true,
-  "description": "Zynksec dashboard (Next.js 15 App Router) — placeholder until Phase 1.",
+  "description": "Zynksec dashboard — Next.js 15 App Router. Phase 4 Sprint 1: read-only scan list + detail view.",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "lint": "next lint",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
     "next": "^15.5.15",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "tailwind-merge": "^2.5.4"
   },
   "devDependencies": {
+    "@testing-library/dom": "^10.4.0",
+    "@testing-library/react": "^16.1.0",
     "@types/node": "^22.9.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.3.4",
     "autoprefixer": "^10.4.20",
+    "happy-dom": "^15.11.7",
     "postcss": "^8.5.10",
     "tailwindcss": "^3.4.14",
-    "typescript": "^5.6.3"
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.5"
   }
 }
